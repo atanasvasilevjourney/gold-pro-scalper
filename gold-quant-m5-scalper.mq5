@@ -494,3 +494,4 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a) {
    }
 }
 //+------------------------------------------------------------------+
+// my work is worship unto GOD
