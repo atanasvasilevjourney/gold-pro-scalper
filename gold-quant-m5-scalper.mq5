@@ -5,7 +5,7 @@
 #property strict
 #property copyright "Copyright 2026, Gemini Quant Lab"
 #property link      ""
-#property version   "3.00"
+#property version   "4.00"
 #property description "Gold Quant M5 Scalper - Mean Reversion Z-Score EA"
 
 //--- Inputs: Strategy
@@ -29,9 +29,16 @@ input int      InpSlippage    = 30;       // Max slippage in points
 input double   InpMaxSpreadPts = 50.0;    // Max allowed spread in points
 
 //--- Inputs: News Filter
-input bool     InpUseNewsFilter   = true;  // Enable news time filter
-input int      InpNewsMinsBefore  = 15;    // Minutes to pause BEFORE news
-input int      InpNewsMinsAfter   = 15;    // Minutes to pause AFTER news
+input bool     InpUseNewsFilter      = true;  // Enable news time filter
+input int      InpNewsMinsBefore     = 15;    // Minutes to pause BEFORE high-impact news
+input int      InpNewsMinsAfter      = 15;    // Minutes to pause AFTER high-impact news
+input int      InpVHINewsMinsBefore  = 60;    // Minutes to pause BEFORE very-high-impact (NFP etc)
+input int      InpVHINewsMinsAfter   = 60;    // Minutes to pause AFTER very-high-impact
+input bool     InpCloseBeforeVHINews = true;  // Close open trades before very-high-impact news
+
+//--- Inputs: Daily Loss Limit
+input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
+input double   InpMaxDailyLossPct    = 5.0;   // Max daily loss % of balance (stops trading)
 
 //--- Inputs: Volatility Filter
 input bool     InpUseVolFilter    = true;  // Enable volatility-adjusted entry
@@ -42,10 +49,27 @@ input double   InpATRMinMultiple  = 0.5;   // Min ATR vs 50-period avg (skip if 
 int handleMA, handleSD, handleATR, handleADX, handleATR50;
 string partialTag = "_P1";
 
-//--- News schedule (up to 20 events per day, stored as server timestamps)
-datetime newsEvents[20];
-int newsCount = 0;
+//--- News schedule: high-impact and very-high-impact stored separately
+#define MAX_NEWS 40
+datetime newsHigh[MAX_NEWS];      // High-impact event times
+int newsHighCount = 0;
+datetime newsVHI[MAX_NEWS];       // Very-high-impact event times (NFP, CPI, FOMC, GDP)
+int newsVHICount = 0;
 datetime lastNewsLoad = 0;
+
+//--- Very-high-impact event keywords
+string vhiKeywords[] = {"Nonfarm Payrolls", "NFP", "Non-Farm",
+                         "CPI ", "Consumer Price Index",
+                         "FOMC", "Federal Funds Rate", "Interest Rate Decision",
+                         "GDP ", "Gross Domestic Product",
+                         "PCE ", "Core PCE",
+                         "Unemployment Rate",
+                         "Retail Sales"};
+
+//--- Daily loss tracking
+double dailyStartBalance = 0;
+int    dailyStartDay = -1;
+bool   dailyLossHit = false;
 
 //+------------------------------------------------------------------+
 int OnInit() {
@@ -64,6 +88,12 @@ int OnInit() {
 
    if(InpUseNewsFilter) LoadNewsEvents();
 
+   // Initialize daily loss tracker
+   dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   dailyStartDay = dt.day_of_year;
+   dailyLossHit = false;
+
    return(INIT_SUCCEEDED);
 }
 
@@ -77,37 +107,76 @@ void OnDeinit(const int reason) {
 }
 
 //+------------------------------------------------------------------+
+//  Daily Loss Limit
+//+------------------------------------------------------------------+
+void CheckDailyReset() {
+   MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   if(dt.day_of_year != dailyStartDay) {
+      dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      dailyStartDay = dt.day_of_year;
+      dailyLossHit = false;
+      Print("Daily loss tracker reset. Starting balance: ", dailyStartBalance);
+   }
+}
+
+bool IsDailyLossLimitHit() {
+   if(!InpUseDailyLossLimit) return false;
+   if(dailyLossHit) return true;
+
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double lossPercent = ((dailyStartBalance - equity) / dailyStartBalance) * 100.0;
+
+   if(lossPercent >= InpMaxDailyLossPct) {
+      dailyLossHit = true;
+      Print("DAILY LOSS LIMIT HIT: ", DoubleToString(lossPercent, 2), "% lost. Trading stopped for today.");
+      return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
 //  News Filter — uses MQL5 economic calendar
 //+------------------------------------------------------------------+
+bool IsVHIEvent(string eventName) {
+   for(int k = 0; k < ArraySize(vhiKeywords); k++) {
+      if(StringFind(eventName, vhiKeywords[k]) >= 0) return true;
+   }
+   return false;
+}
+
 void LoadNewsEvents() {
-   newsCount = 0;
+   newsHighCount = 0;
+   newsVHICount = 0;
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
 
-   // Build start/end of today in server time
    datetime dayStart = TimeCurrent() - (dt.hour * 3600 + dt.min * 60 + dt.sec);
    datetime dayEnd   = dayStart + 86400;
 
    MqlCalendarValue values[];
    int total = CalendarValueHistory(values, dayStart, dayEnd);
 
-   for(int i = 0; i < total && newsCount < 20; i++) {
+   for(int i = 0; i < total; i++) {
       MqlCalendarEvent event;
       if(!CalendarEventById(values[i].event_id, event)) continue;
-
-      // Only high-impact events for USD (gold-correlated)
       if(event.importance != CALENDAR_IMPORTANCE_HIGH) continue;
 
       MqlCalendarCountry country;
       if(!CalendarCountryById(event.country_id, country)) continue;
       if(country.currency != "USD") continue;
 
-      newsEvents[newsCount] = values[i].time;
-      newsCount++;
+      // Classify as very-high-impact or regular high-impact
+      if(IsVHIEvent(event.name) && newsVHICount < MAX_NEWS) {
+         newsVHI[newsVHICount] = values[i].time;
+         newsVHICount++;
+      } else if(newsHighCount < MAX_NEWS) {
+         newsHigh[newsHighCount] = values[i].time;
+         newsHighCount++;
+      }
    }
 
    lastNewsLoad = TimeCurrent();
-   Print("News filter loaded: ", newsCount, " high-impact USD events today");
+   Print("News loaded: ", newsHighCount, " high-impact, ", newsVHICount, " very-high-impact USD events today");
 }
 
 //+------------------------------------------------------------------+
@@ -121,17 +190,40 @@ bool IsNearNews() {
    if(dtNow.day != dtLast.day) LoadNewsEvents();
 
    datetime now = TimeCurrent();
-   for(int i = 0; i < newsCount; i++) {
-      long diff = (long)(newsEvents[i] - now);
-      // Within the blackout window around the event
+
+   // Check very-high-impact events (wider window)
+   for(int i = 0; i < newsVHICount; i++) {
+      long diff = (long)(newsVHI[i] - now);
+      if(diff > -(InpVHINewsMinsAfter * 60) && diff < (InpVHINewsMinsBefore * 60))
+         return true;
+   }
+
+   // Check regular high-impact events (standard window)
+   for(int i = 0; i < newsHighCount; i++) {
+      long diff = (long)(newsHigh[i] - now);
       if(diff > -(InpNewsMinsAfter * 60) && diff < (InpNewsMinsBefore * 60))
+         return true;
+   }
+
+   return false;
+}
+
+//+------------------------------------------------------------------+
+bool IsVHINewsImminent() {
+   if(!InpUseNewsFilter || !InpCloseBeforeVHINews) return false;
+
+   datetime now = TimeCurrent();
+   for(int i = 0; i < newsVHICount; i++) {
+      long diff = (long)(newsVHI[i] - now);
+      // Event is upcoming within the pre-news window
+      if(diff > 0 && diff < (InpVHINewsMinsBefore * 60))
          return true;
    }
    return false;
 }
 
 //+------------------------------------------------------------------+
-//  Volatility Filter — skip abnormal ATR conditions
+//  Volatility Filter
 //+------------------------------------------------------------------+
 bool IsVolatilityOk(double atrFast) {
    if(!InpUseVolFilter) return true;
@@ -141,8 +233,6 @@ bool IsVolatilityOk(double atrFast) {
    if(atrSlow[0] <= 0) return true;
 
    double ratio = atrFast / atrSlow[0];
-
-   // Too volatile (news spike, flash crash) or too quiet (no movement)
    if(ratio > InpATRMaxMultiple || ratio < InpATRMinMultiple) return false;
 
    return true;
@@ -181,7 +271,39 @@ double NormalizeLot(double lot) {
 }
 
 //+------------------------------------------------------------------+
+void CloseAllOwnPositions(string reason) {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      if(PositionGetString(POSITION_SYMBOL) != TradeSymbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+
+      MqlTradeRequest req = {}; MqlTradeResult res = {};
+      req.action   = TRADE_ACTION_DEAL;
+      req.position = ticket;
+      req.symbol   = TradeSymbol;
+      req.volume   = PositionGetDouble(POSITION_VOLUME);
+      long posType = PositionGetInteger(POSITION_TYPE);
+      req.type     = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+      req.price    = (req.type == ORDER_TYPE_SELL) ? SymbolInfoDouble(TradeSymbol, SYMBOL_BID)
+                                                   : SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
+      req.deviation = InpSlippage;
+      uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
+      req.type_filling = (fill & SYMBOL_FILLING_FOK) ? ORDER_FILLING_FOK : ORDER_FILLING_IOC;
+
+      if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
+         Print("Close position failed (", reason, "): ticket=", ticket, " retcode=", res.retcode);
+      } else {
+         Print("Position closed (", reason, "): ticket=", ticket);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 void OnTick() {
+   // Daily loss reset check
+   CheckDailyReset();
+
    double ma[1], sd[1], atr[1], adx[1];
    if(CopyBuffer(handleMA,0,0,1,ma)<1 || CopyBuffer(handleSD,0,0,1,sd)<1 ||
       CopyBuffer(handleATR,0,0,1,atr)<1 || CopyBuffer(handleADX,0,0,1,adx)<1) return;
@@ -194,6 +316,22 @@ void OnTick() {
 
    double zScore = (bid - ma[0]) / sd[0];
    bool nearNews = IsNearNews();
+   bool lossLimitHit = IsDailyLossLimitHit();
+   bool vhiImminent = IsVHINewsImminent();
+
+   // --- DAILY LOSS: close everything and stop ---
+   if(lossLimitHit) {
+      if(SelectOwnPosition()) CloseAllOwnPositions("daily loss limit");
+      Comment("--- GOLD QUANT M5 SCALPER v4 ---\n",
+              "DAILY LOSS LIMIT REACHED - TRADING STOPPED\n",
+              "Loss: ", DoubleToString(((dailyStartBalance - AccountInfoDouble(ACCOUNT_EQUITY)) / dailyStartBalance) * 100.0, 2), "%");
+      return;
+   }
+
+   // --- CLOSE BEFORE VERY-HIGH-IMPACT NEWS ---
+   if(vhiImminent && SelectOwnPosition()) {
+      CloseAllOwnPositions("VHI news imminent");
+   }
 
    // --- POSITION MANAGEMENT ---
    if(SelectOwnPosition()) {
@@ -221,13 +359,17 @@ void OnTick() {
       }
    }
 
-   Comment("--- GOLD QUANT M5 SCALPER v3 ---\n",
+   double dailyLossPct = ((dailyStartBalance - AccountInfoDouble(ACCOUNT_EQUITY)) / dailyStartBalance) * 100.0;
+
+   Comment("--- GOLD QUANT M5 SCALPER v4 ---\n",
            "Z-Score: ", DoubleToString(zScore, 2), "\n",
            "ADX: ", DoubleToString(adx[0], 1), "\n",
            "ATR: ", DoubleToString(atr[0], 2), "\n",
            "Spread: ", DoubleToString((ask-bid)/SymbolInfoDouble(TradeSymbol,SYMBOL_POINT), 1), " pts\n",
-           "News Block: ", (nearNews ? "YES" : "no"), "\n",
-           "Vol Filter: ", (IsVolatilityOk(atr[0]) ? "OK" : "BLOCKED"));
+           "News Block: ", (nearNews ? "YES" : "no"),
+           (vhiImminent ? " [VHI CLOSE]" : ""), "\n",
+           "Vol Filter: ", (IsVolatilityOk(atr[0]) ? "OK" : "BLOCKED"), "\n",
+           "Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(InpMaxDailyLossPct, 1), "% limit");
 }
 
 //+------------------------------------------------------------------+
