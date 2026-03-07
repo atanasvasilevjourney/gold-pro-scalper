@@ -5,7 +5,7 @@
 #property strict
 #property copyright "Copyright 2026, Gemini Quant Lab"
 #property link      ""
-#property version   "5.00"
+#property version   "6.00"
 #property description "Gold Quant M5 Scalper - Mean Reversion Z-Score EA"
 
 //--- Inputs: Strategy
@@ -44,9 +44,13 @@ input int      InpVHINewsMinsBefore  = 60;    // Minutes to pause BEFORE very-hi
 input int      InpVHINewsMinsAfter   = 60;    // Minutes to pause AFTER very-high-impact
 input bool     InpCloseBeforeVHINews = true;  // Close open trades before very-high-impact news
 
-//--- Inputs: Daily Loss Limit
+//--- Inputs: Capital Protection
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 5.0;   // Max daily loss % of balance (stops trading)
+input double   InpMaxDailyLossPct    = 4.0;   // Max daily loss % of balance (stops trading)
+input bool     InpUseWeeklyLossLimit = true;  // Enable max weekly loss stop
+input double   InpMaxWeeklyLossPct   = 10.0;  // Max weekly loss % (stops trading until next week)
+input bool     InpUseEquityStop      = true;  // Enable equity drawdown global stop
+input double   InpMaxEquityDDPct     = 15.0;  // Max drawdown % from peak equity (halts EA)
 
 //--- Inputs: Volatility Filter
 input bool     InpUseVolFilter    = true;  // Enable volatility-adjusted entry
@@ -76,10 +80,17 @@ string vhiKeywords[] = {"Nonfarm Payrolls", "NFP", "Non-Farm",
                          "Unemployment Rate",
                          "Retail Sales"};
 
-//--- Daily loss tracking
+//--- Capital protection tracking
 double dailyStartBalance = 0;
 int    dailyStartDay = -1;
 bool   dailyLossHit = false;
+
+double weeklyStartBalance = 0;
+int    weeklyStartWeek = -1;
+bool   weeklyLossHit = false;
+
+double peakEquity = 0;
+bool   equityStopHit = false;
 
 //+------------------------------------------------------------------+
 int OnInit() {
@@ -98,10 +109,20 @@ int OnInit() {
 
    if(InpUseNewsFilter) LoadNewsEvents();
 
-   dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double bal = AccountInfoDouble(ACCOUNT_BALANCE);
+   double eq  = AccountInfoDouble(ACCOUNT_EQUITY);
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+
+   dailyStartBalance = bal;
    dailyStartDay = dt.day_of_year;
    dailyLossHit = false;
+
+   weeklyStartBalance = bal;
+   weeklyStartWeek = dt.day_of_year / 7;
+   weeklyLossHit = false;
+
+   peakEquity = MathMax(bal, eq);
+   equityStopHit = false;
 
    return(INIT_SUCCEEDED);
 }
@@ -116,15 +137,32 @@ void OnDeinit(const int reason) {
 }
 
 //+------------------------------------------------------------------+
-//  Daily Loss Limit
+//  Capital Protection — Daily / Weekly / Equity Drawdown
 //+------------------------------------------------------------------+
-void CheckDailyReset() {
+void CheckProtectionResets() {
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
+   int currentWeek = dt.day_of_year / 7;
+
+   // Daily reset
    if(dt.day_of_year != dailyStartDay) {
       dailyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
       dailyStartDay = dt.day_of_year;
       dailyLossHit = false;
       Print("Daily loss tracker reset. Starting balance: ", dailyStartBalance);
+   }
+
+   // Weekly reset (approximate: every 7 days)
+   if(currentWeek != weeklyStartWeek) {
+      weeklyStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
+      weeklyStartWeek = currentWeek;
+      weeklyLossHit = false;
+      Print("Weekly loss tracker reset. Starting balance: ", weeklyStartBalance);
+   }
+
+   // Track peak equity (only update when not in drawdown stop)
+   if(!equityStopHit) {
+      double eq = AccountInfoDouble(ACCOUNT_EQUITY);
+      if(eq > peakEquity) peakEquity = eq;
    }
 }
 
@@ -141,6 +179,52 @@ bool IsDailyLossLimitHit() {
       return true;
    }
    return false;
+}
+
+bool IsWeeklyLossLimitHit() {
+   if(!InpUseWeeklyLossLimit) return false;
+   if(weeklyLossHit) return true;
+
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double lossPercent = ((weeklyStartBalance - equity) / weeklyStartBalance) * 100.0;
+
+   if(lossPercent >= InpMaxWeeklyLossPct) {
+      weeklyLossHit = true;
+      Print("WEEKLY LOSS LIMIT HIT: ", DoubleToString(lossPercent, 2), "% lost. Trading stopped until next week.");
+      return true;
+   }
+   return false;
+}
+
+bool IsEquityStopHit() {
+   if(!InpUseEquityStop) return false;
+   if(equityStopHit) return true;
+
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(peakEquity <= 0) return false;
+
+   double ddPercent = ((peakEquity - equity) / peakEquity) * 100.0;
+
+   if(ddPercent >= InpMaxEquityDDPct) {
+      equityStopHit = true;
+      Print("EQUITY DRAWDOWN STOP: ", DoubleToString(ddPercent, 2), "% from peak (",
+            DoubleToString(peakEquity, 2), "). EA HALTED — manual review required.");
+      return true;
+   }
+   return false;
+}
+
+string GetProtectionStatus() {
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double dailyLoss  = ((dailyStartBalance - equity) / dailyStartBalance) * 100.0;
+   double weeklyLoss = ((weeklyStartBalance - equity) / weeklyStartBalance) * 100.0;
+   double eqDD = (peakEquity > 0) ? ((peakEquity - equity) / peakEquity) * 100.0 : 0;
+
+   string status = "";
+   status += "Day: "  + DoubleToString(-dailyLoss, 2)  + "% / -" + DoubleToString(InpMaxDailyLossPct, 1)  + "%";
+   status += " | Wk: " + DoubleToString(-weeklyLoss, 2) + "% / -" + DoubleToString(InpMaxWeeklyLossPct, 1) + "%";
+   status += " | DD: "  + DoubleToString(eqDD, 2)       + "% / "  + DoubleToString(InpMaxEquityDDPct, 1)   + "%";
+   return status;
 }
 
 //+------------------------------------------------------------------+
@@ -439,11 +523,11 @@ void ManagePosition(double atrVal) {
    bool hitTP1 = HasTag(tagTP1);
    bool hitTP2 = HasTag(tagTP2);
 
-   // --- TP1: Close 50% at InpTP1_ATR profit → move SL to breakeven ---
+   // --- TP1: Close 50% at InpTP1_ATR profit ? move SL to breakeven ---
    if(!hitTP1 && profitATR >= InpTP1_ATR) {
       if(ClosePartial(0.50, "TP1")) {
          MoveSLToBreakeven();
-         Print("TP1 hit at ", DoubleToString(profitATR, 2), " ATR profit. 50% closed, SL → breakeven.");
+         Print("TP1 hit at ", DoubleToString(profitATR, 2), " ATR profit. 50% closed, SL ? breakeven.");
       }
    }
 
@@ -464,7 +548,7 @@ void ManagePosition(double atrVal) {
 
 //+------------------------------------------------------------------+
 void OnTick() {
-   CheckDailyReset();
+   CheckProtectionResets();
 
    double ma[1], sd[1], atr[1], adx[1];
    if(CopyBuffer(handleMA,0,0,1,ma)<1 || CopyBuffer(handleSD,0,0,1,sd)<1 ||
@@ -478,15 +562,34 @@ void OnTick() {
 
    double zScore = (bid - ma[0]) / sd[0];
    bool nearNews = IsNearNews();
-   bool lossLimitHit = IsDailyLossLimitHit();
    bool vhiImminent = IsVHINewsImminent();
 
-   // --- DAILY LOSS: close everything and stop ---
-   if(lossLimitHit) {
+   // --- EQUITY DRAWDOWN GLOBAL STOP (requires manual review) ---
+   if(IsEquityStopHit()) {
+      if(SelectOwnPosition()) CloseAllOwnPositions("equity drawdown stop");
+      Comment("--- GOLD QUANT M5 SCALPER v6 ---\n",
+              "EQUITY DRAWDOWN STOP - EA HALTED\n",
+              "Peak: ", DoubleToString(peakEquity, 2), "\n",
+              "Drawdown: ", DoubleToString(((peakEquity - AccountInfoDouble(ACCOUNT_EQUITY)) / peakEquity) * 100.0, 2), "%\n",
+              "Remove EA and re-attach to reset after manual review.");
+      return;
+   }
+
+   // --- WEEKLY LOSS: close everything and stop until next week ---
+   if(IsWeeklyLossLimitHit()) {
+      if(SelectOwnPosition()) CloseAllOwnPositions("weekly loss limit");
+      Comment("--- GOLD QUANT M5 SCALPER v6 ---\n",
+              "WEEKLY LOSS LIMIT REACHED - TRADING PAUSED\n",
+              GetProtectionStatus());
+      return;
+   }
+
+   // --- DAILY LOSS: close everything and stop for today ---
+   if(IsDailyLossLimitHit()) {
       if(SelectOwnPosition()) CloseAllOwnPositions("daily loss limit");
-      Comment("--- GOLD QUANT M5 SCALPER v5 ---\n",
+      Comment("--- GOLD QUANT M5 SCALPER v6 ---\n",
               "DAILY LOSS LIMIT REACHED - TRADING STOPPED\n",
-              "Loss: ", DoubleToString(((dailyStartBalance - AccountInfoDouble(ACCOUNT_EQUITY)) / dailyStartBalance) * 100.0, 2), "%");
+              GetProtectionStatus());
       return;
    }
 
@@ -512,7 +615,6 @@ void OnTick() {
       }
    }
 
-   double dailyLossPct = ((dailyStartBalance - AccountInfoDouble(ACCOUNT_EQUITY)) / dailyStartBalance) * 100.0;
    double profitATR = 0;
    string exitStage = "---";
    if(SelectOwnPosition()) {
@@ -522,7 +624,7 @@ void OnTick() {
       else                    exitStage = "Full position (waiting TP1)";
    }
 
-   Comment("--- GOLD QUANT M5 SCALPER v5 ---\n",
+   Comment("--- GOLD QUANT M5 SCALPER v6 ---\n",
            "Z-Score: ", DoubleToString(zScore, 2), "\n",
            "ADX: ", DoubleToString(adx[0], 1), "\n",
            "ATR: ", DoubleToString(atr[0], 2), "\n",
@@ -531,7 +633,7 @@ void OnTick() {
            (vhiImminent ? " [VHI CLOSE]" : ""), "\n",
            "Vol Filter: ", (IsVolatilityOk(atr[0]) ? "OK" : "BLOCKED"), "\n",
            "Profit: ", DoubleToString(profitATR, 2), " ATR | ", exitStage, "\n",
-           "Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(InpMaxDailyLossPct, 1), "% limit");
+           GetProtectionStatus());
 }
 
 //+------------------------------------------------------------------+
