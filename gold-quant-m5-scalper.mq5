@@ -5,7 +5,7 @@
 #property strict
 #property copyright "Copyright 2026, Gemini Quant Lab"
 #property link      ""
-#property version   "7.10"
+#property version   "8.00"
 #property description "Gold Quant M5 Scalper - Mean Reversion Z-Score EA"
 
 //--- Inputs: Strategy
@@ -26,6 +26,13 @@ input double   InpTrailTightATR  = 1.0;   // Tight trail multiplier (after TP1, 
 input double   InpTrailLooseATR  = 1.5;   // Loose trail multiplier (after TP2)
 input double   InpTrailBuyATR    = 0.0;   // Buy trail override (0 = use standard)
 input double   InpTrailSellATR   = 0.0;   // Sell trail override (0 = use standard)
+
+//--- Inputs: Loss Reduction
+input bool     InpUseScaledEntry  = true;  // Scaled entry: start 50%, add 50% on confirmation
+input double   InpScaleInATR      = 0.3;   // Add remaining 50% after this ATR profit
+input bool     InpUseTimeExit     = true;  // Time-based exit for stalled trades
+input int      InpStallBars       = 8;     // Close if no +0.3 ATR move after this many bars
+input double   InpStallMinATR     = 0.3;   // Min ATR profit required within stall window
 
 //--- Inputs: Indicators
 input int      InpMAPeriod    = 20;       // MA / StdDev period
@@ -69,6 +76,11 @@ int handleMA, handleSD, handleATR, handleADX, handleATR50, handleRSI;
 //--- Partial close tags (embedded in trade comment)
 string tagTP1 = "_T1";
 string tagTP2 = "_T2";
+string tagScaled = "_SC";  // Marks that scale-in has been added
+
+//--- Entry tracking for time-based exit and scale-in
+datetime entryTime = 0;
+bool     scaledIn = false;
 
 //--- News schedule
 #define MAX_NEWS 40
@@ -526,14 +538,84 @@ void HandleTrailingStop(double atrVal) {
 }
 
 //+------------------------------------------------------------------+
+//  Time-based exit for stalled trades
+//+------------------------------------------------------------------+
+bool CheckTimeExit(double atrVal) {
+   if(!InpUseTimeExit) return false;
+   if(entryTime == 0) return false;
+
+   // Count bars since entry
+   int barsSinceEntry = iBarShift(TradeSymbol, _Period, entryTime);
+   if(barsSinceEntry < InpStallBars) return false;
+
+   double profitATR = GetPositionProfitATR(atrVal);
+
+   // If trade hasn't moved enough in our favor, close it
+   if(profitATR < InpStallMinATR) {
+      CloseAllOwnPositions("stalled trade (" + IntegerToString(barsSinceEntry) + " bars, " +
+                           DoubleToString(profitATR, 2) + " ATR)");
+      return true;
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//  Scaled entry — add remaining 50% when price confirms
+//+------------------------------------------------------------------+
+void CheckScaleIn(double atrVal) {
+   if(!InpUseScaledEntry) return;
+   if(scaledIn || HasTag(tagScaled)) { scaledIn = true; return; }
+
+   double profitATR = GetPositionProfitATR(atrVal);
+   if(profitATR < InpScaleInATR) return;
+
+   // Price is moving in our favor — add the other 50%
+   double vol = PositionGetDouble(POSITION_VOLUME);
+   long   type = PositionGetInteger(POSITION_TYPE);
+   double price = (type == POSITION_TYPE_BUY) ? SymbolInfoDouble(TradeSymbol, SYMBOL_ASK)
+                                               : SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
+   double currentSL = PositionGetDouble(POSITION_SL);
+   double currentTP = PositionGetDouble(POSITION_TP);
+
+   MqlTradeRequest req = {}; MqlTradeResult res = {};
+   req.action       = TRADE_ACTION_DEAL;
+   req.symbol       = TradeSymbol;
+   req.volume       = vol;  // Same size as initial = doubles the position
+   req.type         = (type == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   req.price        = price;
+   req.magic        = InpMagic;
+   req.sl           = currentSL;
+   req.tp           = currentTP;
+   req.deviation    = InpSlippage;
+   req.comment      = "GQS" + tagScaled;
+   uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
+   req.type_filling = (fill & SYMBOL_FILLING_FOK) ? ORDER_FILLING_FOK : ORDER_FILLING_IOC;
+
+   if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
+      Print("Scale-in failed: retcode=", res.retcode, " comment=", res.comment);
+   } else {
+      scaledIn = true;
+      Print("Scaled in: added ", vol, " lots at ", DoubleToString(profitATR, 2), " ATR profit");
+   }
+}
+
+//+------------------------------------------------------------------+
 //  Position Management — 3-stage exit
 //+------------------------------------------------------------------+
 void ManagePosition(double atrVal) {
+   // 1. Time-based exit for stalled trades (before anything else)
+   if(CheckTimeExit(atrVal)) return;
+
    double profitATR = GetPositionProfitATR(atrVal);
    bool hitTP1 = HasTag(tagTP1);
    bool hitTP2 = HasTag(tagTP2);
 
-   // --- TP1: Close 50% at InpTP1_ATR profit, move SL to breakeven+ ---
+   // 2. Scale-in: add remaining 50% if price confirms direction
+   if(!hitTP1) {
+      CheckScaleIn(atrVal);
+   }
+
+   // 3. TP1: Close 50% at InpTP1_ATR profit, move SL to breakeven+
    if(!hitTP1 && profitATR >= InpTP1_ATR) {
       if(ClosePartial(0.50, "TP1")) {
          MoveSLToBreakevenPlus(atrVal);
@@ -541,16 +623,16 @@ void ManagePosition(double atrVal) {
       }
    }
 
-   // --- TP2: Close 25% (~50% of remaining) at InpTP2_ATR profit ---
+   // 4. TP2: Close ~50% of remaining at InpTP2_ATR profit
    if(hitTP1 && !hitTP2 && profitATR >= InpTP2_ATR) {
       if(SelectOwnPosition()) {
          if(ClosePartial(0.50, "TP2")) {
-            Print("TP2 hit at ", DoubleToString(profitATR, 2), " ATR profit. Another 25% closed. ~25% running with loose trail.");
+            Print("TP2 hit at ", DoubleToString(profitATR, 2), " ATR profit. Another portion closed.");
          }
       }
    }
 
-   // --- Stepped trailing on whatever remains ---
+   // 5. Stepped trailing on whatever remains
    if(SelectOwnPosition()) {
       HandleTrailingStop(atrVal);
    }
@@ -578,7 +660,7 @@ void OnTick() {
    // --- EQUITY DRAWDOWN GLOBAL STOP (requires manual review) ---
    if(IsEquityStopHit()) {
       if(SelectOwnPosition()) CloseAllOwnPositions("equity drawdown stop");
-      Comment("--- GOLD QUANT M5 SCALPER v7 ---\n",
+      Comment("--- GOLD QUANT M5 SCALPER v8 ---\n",
               "EQUITY DRAWDOWN STOP - EA HALTED\n",
               "Peak: ", DoubleToString(peakEquity, 2), "\n",
               "Drawdown: ", DoubleToString(((peakEquity - AccountInfoDouble(ACCOUNT_EQUITY)) / peakEquity) * 100.0, 2), "%\n",
@@ -589,7 +671,7 @@ void OnTick() {
    // --- WEEKLY LOSS: close everything and stop until next week ---
    if(IsWeeklyLossLimitHit()) {
       if(SelectOwnPosition()) CloseAllOwnPositions("weekly loss limit");
-      Comment("--- GOLD QUANT M5 SCALPER v7 ---\n",
+      Comment("--- GOLD QUANT M5 SCALPER v8 ---\n",
               "WEEKLY LOSS LIMIT REACHED - TRADING PAUSED\n",
               GetProtectionStatus());
       return;
@@ -598,7 +680,7 @@ void OnTick() {
    // --- DAILY LOSS: close everything and stop for today ---
    if(IsDailyLossLimitHit()) {
       if(SelectOwnPosition()) CloseAllOwnPositions("daily loss limit");
-      Comment("--- GOLD QUANT M5 SCALPER v7 ---\n",
+      Comment("--- GOLD QUANT M5 SCALPER v8 ---\n",
               "DAILY LOSS LIMIT REACHED - TRADING STOPPED\n",
               GetProtectionStatus());
       return;
@@ -613,6 +695,10 @@ void OnTick() {
    if(SelectOwnPosition()) {
       ManagePosition(atr[0]);
    } else {
+      // Reset state for next trade
+      entryTime = 0;
+      scaledIn = false;
+
       // --- ENTRY LOGIC ---
       bool inWindow  = (dt.hour >= InpStartHour && dt.hour < InpEndHour);
       bool isRanging = (adx[0] < InpADXFilter);
@@ -636,10 +722,14 @@ void OnTick() {
       profitATR = GetPositionProfitATR(atr[0]);
       if(HasTag(tagTP2))      exitStage = "TP2 done (~25% running, loose trail)";
       else if(HasTag(tagTP1)) exitStage = "TP1 done (50% running, tight trail)";
-      else                    exitStage = "Full position (waiting TP1)";
+      else {
+         string scaleStatus = scaledIn ? "full" : "50% (awaiting scale-in)";
+         int bars = (entryTime > 0) ? iBarShift(TradeSymbol, _Period, entryTime) : 0;
+         exitStage = scaleStatus + " | bars: " + IntegerToString(bars) + "/" + IntegerToString(InpStallBars);
+      }
    }
 
-   Comment("--- GOLD QUANT M5 SCALPER v7 ---\n",
+   Comment("--- GOLD QUANT M5 SCALPER v8 ---\n",
            "Z-Score: ", DoubleToString(zScore, 2),
            " | RSI: ", DoubleToString(rsi[0], 1), "\n",
            "ADX: ", DoubleToString(adx[0], 1), "\n",
@@ -667,6 +757,11 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a) {
    }
 
    double lot = risk / (slD * (1.0 / tickS) * tickV);
+
+   // Scaled entry: start with 50% of full size, add rest on confirmation
+   if(InpUseScaledEntry)
+      lot = lot * 0.5;
+
    lot = NormalizeLot(lot);
    int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
 
@@ -695,6 +790,8 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a) {
       Print("Entry failed: retcode=", res.retcode, " comment=", res.comment);
    } else {
       Print("Trade opened: ", EnumToString(type), " ", lot, " lots, SL=", sl);
+      entryTime = TimeCurrent();
+      scaledIn = !InpUseScaledEntry;  // If not using scaled entry, mark as already scaled
    }
 }
 //+------------------------------------------------------------------+
