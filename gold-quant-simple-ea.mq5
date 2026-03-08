@@ -10,10 +10,11 @@
 
 //--- Inputs: Strategy
 input string   TradeSymbol    = "GOLD";
-input double   InpEntryZ      = 2.5;      // Z-Score entry threshold (2.3–2.7 sweet spot)
-input int      InpADXFilter   = 20;       // ADX range filter (below = ranging)
+input double   InpEntryZ      = 2.8;      // Z-Score entry threshold (2.7–3.0 high conviction)
+input int      InpADXFilter   = 18;       // ADX range filter (strict ranging)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
-input double   InpATRStop     = 2.0;      // ATR multiplier for SL (1.5–2.5)
+input double   InpATRStop     = 1.5;      // ATR multiplier for SL (1.2–1.8 for M5 gold)
+input double   InpEarlySLATR  = 0.8;      // Move SL to this ATR after +0.5 ATR profit (0 = disabled)
 input double   InpTP1_ATR     = 1.0;      // TP1: close 50% at this ATR profit
 input double   InpHardTP_ATR  = 4.0;      // Hard TP safety net (ATR multiplier, 0 = disabled)
 input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
@@ -27,6 +28,12 @@ input int      InpMagic       = 777333;   // Magic number
 input int      InpMAPeriod    = 20;       // MA / StdDev period
 input int      InpATRPeriod   = 14;       // ATR period
 input int      InpADXPeriod   = 14;       // ADX period
+input int      InpRSIPeriod   = 14;       // RSI period
+
+//--- Inputs: RSI Confirmation
+input bool     InpUseRSIFilter   = true;  // Enable RSI confirmation filter
+input double   InpRSIOversold    = 35.0;  // RSI below this = oversold (allow BUY)
+input double   InpRSIOverbought  = 65.0;  // RSI above this = overbought (allow SELL)
 
 //--- Inputs: Execution
 input int      InpSlippage    = 30;       // Max slippage in points
@@ -50,7 +57,7 @@ input double   InpATRMaxMultiple  = 2.0;   // Max ATR vs 50-period avg (skip if 
 input double   InpATRMinMultiple  = 0.5;   // Min ATR vs 50-period avg (skip if too quiet)
 
 //--- Global Handles & State
-int handleMA, handleSD, handleATR, handleADX, handleATR50;
+int handleMA, handleSD, handleATR, handleADX, handleATR50, handleRSI;
 ulong partialClosedTicket = 0;  // Tracks which position has had TP1 taken
 datetime entryTime = 0;          // Tracks when current trade was opened
 
@@ -83,10 +90,11 @@ int OnInit() {
    handleATR   = iATR(TradeSymbol, _Period, InpATRPeriod);
    handleADX   = iADX(TradeSymbol, _Period, InpADXPeriod);
    handleATR50 = iATR(TradeSymbol, _Period, 50);
+   handleRSI   = iRSI(TradeSymbol, _Period, InpRSIPeriod, PRICE_CLOSE);
 
    if(handleMA == INVALID_HANDLE || handleSD == INVALID_HANDLE ||
       handleATR == INVALID_HANDLE || handleADX == INVALID_HANDLE ||
-      handleATR50 == INVALID_HANDLE) {
+      handleATR50 == INVALID_HANDLE || handleRSI == INVALID_HANDLE) {
       Print("Failed to create indicator handles");
       return(INIT_FAILED);
    }
@@ -109,6 +117,7 @@ void OnDeinit(const int reason) {
    if(handleATR   != INVALID_HANDLE) IndicatorRelease(handleATR);
    if(handleADX   != INVALID_HANDLE) IndicatorRelease(handleADX);
    if(handleATR50 != INVALID_HANDLE) IndicatorRelease(handleATR50);
+   if(handleRSI   != INVALID_HANDLE) IndicatorRelease(handleRSI);
 }
 
 //+------------------------------------------------------------------+
@@ -326,9 +335,10 @@ void OnTick() {
    // Daily loss reset check
    CheckDailyReset();
 
-   double ma[1], sd[1], atr[1], adx[1];
+   double ma[1], sd[1], atr[1], adx[1], rsi[1];
    if(CopyBuffer(handleMA,0,0,1,ma)<1 || CopyBuffer(handleSD,0,0,1,sd)<1 ||
-      CopyBuffer(handleATR,0,0,1,atr)<1 || CopyBuffer(handleADX,0,0,1,adx)<1) return;
+      CopyBuffer(handleATR,0,0,1,atr)<1 || CopyBuffer(handleADX,0,0,1,adx)<1 ||
+      CopyBuffer(handleRSI,0,0,1,rsi)<1) return;
 
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
    double bid = SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
@@ -370,15 +380,32 @@ void OnTick() {
       // Re-check position still exists after potential stall close
       if(SelectOwnPosition()) {
          bool alreadyPartial = IsPartialClosed();
-
-         // 1. TP1: Close 50% at +InpTP1_ATR profit
          double profitATR = GetPositionProfitATR(atr[0]);
+
+         // 1. Early SL tighten: move SL closer once trade shows +0.5 ATR profit
+         if(!alreadyPartial && InpEarlySLATR > 0 && profitATR >= 0.5) {
+            double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+            double currentSL = PositionGetDouble(POSITION_SL);
+            long posType = PositionGetInteger(POSITION_TYPE);
+            int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
+            double earlySLDist = atr[0] * InpEarlySLATR;
+            double newSL;
+            if(posType == POSITION_TYPE_BUY) {
+               newSL = NormalizeDouble(entry - earlySLDist, digits);
+               if(newSL > currentSL) ModifySL(newSL, PositionGetDouble(POSITION_TP));
+            } else {
+               newSL = NormalizeDouble(entry + earlySLDist, digits);
+               if(newSL < currentSL || currentSL == 0) ModifySL(newSL, PositionGetDouble(POSITION_TP));
+            }
+         }
+
+         // 2. TP1: Close 50% at +InpTP1_ATR profit
          if(!alreadyPartial && profitATR >= InpTP1_ATR) {
             ScaleOutHalf();
             Print("TP1 Hit at ", DoubleToString(profitATR, 2), " ATR: 50% Closed. SL moved to Breakeven.");
          }
 
-         // 2. TRAILING
+         // 3. TRAILING
          HandleTrailingStop(atr[0]);
       }
    } else {
@@ -393,9 +420,13 @@ void OnTick() {
       bool spreadOk  = (spreadPts <= InpMaxSpreadPts);
       bool volOk     = IsVolatilityOk(atr[0]);
 
+      // RSI confirmation: buy only if oversold, sell only if overbought
+      bool rsiBuyOk  = (!InpUseRSIFilter || rsi[0] < InpRSIOversold);
+      bool rsiSellOk = (!InpUseRSIFilter || rsi[0] > InpRSIOverbought);
+
       if(inWindow && isRanging && spreadOk && volOk && !nearNews && MathAbs(zScore) > InpEntryZ) {
-         if(zScore < 0) ExecuteTrade(ORDER_TYPE_BUY, ask, atr[0]);
-         else           ExecuteTrade(ORDER_TYPE_SELL, bid, atr[0]);
+         if(zScore < 0 && rsiBuyOk)       ExecuteTrade(ORDER_TYPE_BUY, ask, atr[0]);
+         else if(zScore > 0 && rsiSellOk) ExecuteTrade(ORDER_TYPE_SELL, bid, atr[0]);
       }
    }
 
