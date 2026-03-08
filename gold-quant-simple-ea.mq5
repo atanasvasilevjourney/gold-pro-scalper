@@ -41,7 +41,7 @@ input double   InpMaxSpreadPts = 80.0;    // Max allowed spread in points (gold 
 
 //--- Inputs: Daily Loss Limit
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 10.0;   // Max daily loss % of balance (stops trading)
+input double   InpMaxDailyLossPct    = 40.0;   // Max daily loss % (hot limit, monitor manually)
 
 //--- Global Handles & State
 int handleMA, handleSD, handleATR, handleADX, handleRSI;
