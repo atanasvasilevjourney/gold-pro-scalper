@@ -15,7 +15,7 @@ input int      InpADXFilter   = 18;       // ADX range filter (strict ranging)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 1.5;      // ATR multiplier for SL (1.2–1.8 for M5 gold)
 input double   InpTP1_ATR     = 1.0;      // TP1: close 50% at this ATR profit
-input double   InpHardTP_ATR  = 4.0;      // Hard TP safety net (ATR multiplier, 0 = disabled)
+input double   InpHardTP_ATR  = 0.0;      // Hard TP safety net (ATR multiplier, 0 = disabled)
 input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
 input int      InpStartHour   = 10;       // Trade window start hour (London/NY overlap, GMT+2)
 input int      InpEndHour     = 19;       // Trade window end hour, exclusive (GMT+2)
