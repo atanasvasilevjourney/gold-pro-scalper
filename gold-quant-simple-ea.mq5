@@ -14,7 +14,6 @@ input double   InpEntryZ      = 2.8;      // Z-Score entry threshold (2.7–3.0 
 input int      InpADXFilter   = 18;       // ADX range filter (strict ranging)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 1.5;      // ATR multiplier for SL (1.2–1.8 for M5 gold)
-input double   InpEarlySLATR  = 0.8;      // Move SL to this ATR after +0.5 ATR profit (0 = disabled)
 input double   InpTP1_ATR     = 1.0;      // TP1: close 50% at this ATR profit
 input double   InpHardTP_ATR  = 4.0;      // Hard TP safety net (ATR multiplier, 0 = disabled)
 input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
@@ -245,24 +244,7 @@ void OnTick() {
          bool alreadyPartial = IsPartialClosed();
          double profitATR = GetPositionProfitATR(atr[0]);
 
-         // 1. Early SL tighten: move SL closer once trade shows +0.5 ATR profit
-         if(!alreadyPartial && InpEarlySLATR > 0 && profitATR >= 0.5) {
-            double entry = PositionGetDouble(POSITION_PRICE_OPEN);
-            double currentSL = PositionGetDouble(POSITION_SL);
-            long posType = PositionGetInteger(POSITION_TYPE);
-            int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
-            double earlySLDist = atr[0] * InpEarlySLATR;
-            double newSL;
-            if(posType == POSITION_TYPE_BUY) {
-               newSL = NormalizeDouble(entry - earlySLDist, digits);
-               if(newSL > currentSL) ModifySL(newSL, PositionGetDouble(POSITION_TP));
-            } else {
-               newSL = NormalizeDouble(entry + earlySLDist, digits);
-               if(newSL < currentSL || currentSL == 0) ModifySL(newSL, PositionGetDouble(POSITION_TP));
-            }
-         }
-
-         // 2. TP1: Close 50% at +InpTP1_ATR profit
+         // 1. TP1: Close 50% at +InpTP1_ATR profit
          if(!alreadyPartial && profitATR >= InpTP1_ATR) {
             ScaleOutHalf();
             Print("TP1 Hit at ", DoubleToString(profitATR, 2), " ATR: 50% Closed. SL moved to Breakeven.");
