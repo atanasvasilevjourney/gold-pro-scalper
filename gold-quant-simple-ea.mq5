@@ -21,7 +21,8 @@ input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
 input int      InpStartHour   = 10;       // Trade window start hour (London/NY overlap, GMT+2)
 input int      InpEndHour     = 19;       // Trade window end hour, exclusive (GMT+2)
 input int      InpStallBars   = 8;        // Close stalled trade after this many bars
-input double   InpStallMinATR = 0.3;     // Min ATR profit required within stall window
+input double   InpStallMinATR = 0.2;     // Min ATR profit required within stall window
+input int      InpLoserBars   = 5;       // Close if profit < 0 after this many bars (0 = disabled)
 input int      InpMagic       = 777333;   // Magic number
 
 //--- Inputs: Indicators
@@ -367,11 +368,18 @@ void OnTick() {
 
    // --- POSITION MANAGEMENT ---
    if(SelectOwnPosition()) {
-      // 0. Stall timeout: close if no progress after X bars
+      // 0. Stall/loser timeout
       if(entryTime > 0) {
          int barsSinceEntry = iBarShift(TradeSymbol, _Period, entryTime);
          double profitATR = GetPositionProfitATR(atr[0]);
-         if(barsSinceEntry >= InpStallBars && profitATR < InpStallMinATR) {
+
+         // Fast cut: close underwater trades after 5 bars
+         if(InpLoserBars > 0 && barsSinceEntry >= InpLoserBars && profitATR < 0) {
+            Print("Loser cut: ", barsSinceEntry, " bars, ", DoubleToString(profitATR, 2), " ATR (underwater). Closing.");
+            CloseAllOwnPositions("underwater trade");
+         }
+         // Stall cut: close stagnant trades after 8 bars
+         else if(barsSinceEntry >= InpStallBars && profitATR < InpStallMinATR) {
             Print("Stall timeout: ", barsSinceEntry, " bars, ", DoubleToString(profitATR, 2), " ATR profit. Closing.");
             CloseAllOwnPositions("stalled trade");
          }
