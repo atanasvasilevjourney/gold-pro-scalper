@@ -15,6 +15,7 @@ input int      InpADXFilter   = 20;       // ADX range filter (below = ranging)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 2.0;      // ATR multiplier for SL (1.5–2.5)
 input double   InpTP1_ATR     = 1.0;      // TP1: close 50% at this ATR profit
+input double   InpHardTP_ATR  = 4.0;      // Hard TP safety net (ATR multiplier, 0 = disabled)
 input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
 input int      InpStartHour   = 10;       // Trade window start hour (London/NY overlap, GMT+2)
 input int      InpEndHour     = 19;       // Trade window end hour, exclusive (GMT+2)
@@ -517,6 +518,14 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a) {
    lot = NormalizeLot(lot);
    int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
 
+   // Hard TP as safety net (protects against disconnects)
+   double tp = 0;
+   if(InpHardTP_ATR > 0) {
+      double tpD = a * InpHardTP_ATR;
+      tp = (type == ORDER_TYPE_BUY) ? (p + tpD) : (p - tpD);
+      tp = NormalizeDouble(tp, digits);
+   }
+
    req.action       = TRADE_ACTION_DEAL;
    req.symbol       = TradeSymbol;
    req.volume       = lot;
@@ -524,6 +533,7 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a) {
    req.price        = p;
    req.magic        = InpMagic;
    req.sl           = NormalizeDouble(sl, digits);
+   req.tp           = tp;
    req.deviation    = InpSlippage;
    req.comment      = "GQS";
    uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
