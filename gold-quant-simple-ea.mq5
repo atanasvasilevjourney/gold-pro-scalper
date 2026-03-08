@@ -19,9 +19,9 @@ input double   InpHardTP_ATR  = 0.0;      // Hard TP safety net (ATR multiplier,
 input double   InpTrailingATR = 2.0;      // ATR multiplier for trailing (loose for runners)
 input int      InpStartHour   = 10;       // Trade window start hour (London/NY overlap, GMT+2)
 input int      InpEndHour     = 19;       // Trade window end hour, exclusive (GMT+2)
-input int      InpStallBars   = 8;        // Close stalled trade after this many bars
-input double   InpStallMinATR = 0.2;     // Min ATR profit required within stall window
-input int      InpLoserBars   = 5;       // Close if profit < 0 after this many bars (0 = disabled)
+input int      InpStallBars   = 6;        // Close stalled trade after this many bars
+input double   InpStallMinATR = 0.15;    // Min ATR profit required within stall window
+input int      InpLoserBars   = 3;       // Close if profit < 0 after this many bars (0 = disabled)
 input int      InpMagic       = 777333;   // Magic number
 
 //--- Inputs: Indicators
