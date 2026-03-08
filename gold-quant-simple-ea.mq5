@@ -11,7 +11,7 @@
 //--- Inputs: Strategy
 input string   TradeSymbol    = "GOLD";
 input double   InpEntryZ      = 2.2;      // Z-Score entry threshold (2.0–2.5 aggressive frequency)
-input int      InpADXFilter   = 18;       // ADX range filter (strict ranging)
+input int      InpADXFilter   = 25;       // ADX range filter (allows mild trends)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 1.5;      // ATR multiplier for SL (1.2–1.8 for M5 gold)
 input double   InpTP1_ATR     = 1.0;      // TP1: close 50% at this ATR profit
