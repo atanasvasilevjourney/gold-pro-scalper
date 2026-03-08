@@ -44,13 +44,8 @@ input double   InpMaxSpreadPts = 50.0;    // Max allowed spread in points
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
 input double   InpMaxDailyLossPct    = 10.0;   // Max daily loss % of balance (stops trading)
 
-//--- Inputs: Volatility Filter
-input bool     InpUseVolFilter    = true;  // Enable volatility-adjusted entry
-input double   InpATRMaxMultiple  = 2.0;   // Max ATR vs 50-period avg (skip if exceeded)
-input double   InpATRMinMultiple  = 0.5;   // Min ATR vs 50-period avg (skip if too quiet)
-
 //--- Global Handles & State
-int handleMA, handleSD, handleATR, handleADX, handleATR50, handleRSI;
+int handleMA, handleSD, handleATR, handleADX, handleRSI;
 ulong partialClosedTicket = 0;  // Tracks which position has had TP1 taken
 datetime entryTime = 0;          // Tracks when current trade was opened
 
@@ -65,12 +60,11 @@ int OnInit() {
    handleSD    = iStdDev(TradeSymbol, _Period, InpMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
    handleATR   = iATR(TradeSymbol, _Period, InpATRPeriod);
    handleADX   = iADX(TradeSymbol, _Period, InpADXPeriod);
-   handleATR50 = iATR(TradeSymbol, _Period, 50);
    handleRSI   = iRSI(TradeSymbol, _Period, InpRSIPeriod, PRICE_CLOSE);
 
    if(handleMA == INVALID_HANDLE || handleSD == INVALID_HANDLE ||
       handleATR == INVALID_HANDLE || handleADX == INVALID_HANDLE ||
-      handleATR50 == INVALID_HANDLE || handleRSI == INVALID_HANDLE) {
+      handleRSI == INVALID_HANDLE) {
       Print("Failed to create indicator handles");
       return(INIT_FAILED);
    }
@@ -90,7 +84,6 @@ void OnDeinit(const int reason) {
    if(handleSD    != INVALID_HANDLE) IndicatorRelease(handleSD);
    if(handleATR   != INVALID_HANDLE) IndicatorRelease(handleATR);
    if(handleADX   != INVALID_HANDLE) IndicatorRelease(handleADX);
-   if(handleATR50 != INVALID_HANDLE) IndicatorRelease(handleATR50);
    if(handleRSI   != INVALID_HANDLE) IndicatorRelease(handleRSI);
 }
 
@@ -120,22 +113,6 @@ bool IsDailyLossLimitHit() {
       return true;
    }
    return false;
-}
-
-//+------------------------------------------------------------------+
-//  Volatility Filter
-//+------------------------------------------------------------------+
-bool IsVolatilityOk(double atrFast) {
-   if(!InpUseVolFilter) return true;
-
-   double atrSlow[1];
-   if(CopyBuffer(handleATR50, 0, 0, 1, atrSlow) < 1) return true;
-   if(atrSlow[0] <= 0) return true;
-
-   double ratio = atrFast / atrSlow[0];
-   if(ratio > InpATRMaxMultiple || ratio < InpATRMinMultiple) return false;
-
-   return true;
 }
 
 //+------------------------------------------------------------------+
@@ -304,13 +281,12 @@ void OnTick() {
       bool isRanging = (adx[0] < InpADXFilter);
       double spreadPts = (ask - bid) / SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
       bool spreadOk  = (spreadPts <= InpMaxSpreadPts);
-      bool volOk     = IsVolatilityOk(atr[0]);
 
       // RSI confirmation: buy only if oversold, sell only if overbought
       bool rsiBuyOk  = (!InpUseRSIFilter || rsi[0] < InpRSIOversold);
       bool rsiSellOk = (!InpUseRSIFilter || rsi[0] > InpRSIOverbought);
 
-      if(inWindow && isRanging && spreadOk && volOk && MathAbs(zScore) > InpEntryZ) {
+      if(inWindow && isRanging && spreadOk && MathAbs(zScore) > InpEntryZ) {
          if(zScore < 0 && rsiBuyOk)       ExecuteTrade(ORDER_TYPE_BUY, ask, atr[0]);
          else if(zScore > 0 && rsiSellOk) ExecuteTrade(ORDER_TYPE_SELL, bid, atr[0]);
       }
@@ -323,7 +299,6 @@ void OnTick() {
            "ADX: ", DoubleToString(adx[0], 1), "\n",
            "ATR: ", DoubleToString(atr[0], 2), "\n",
            "Spread: ", DoubleToString((ask-bid)/SymbolInfoDouble(TradeSymbol,SYMBOL_POINT), 1), " pts\n",
-           "Vol Filter: ", (IsVolatilityOk(atr[0]) ? "OK" : "BLOCKED"), "\n",
            "Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(InpMaxDailyLossPct, 1), "% limit");
 }
 
