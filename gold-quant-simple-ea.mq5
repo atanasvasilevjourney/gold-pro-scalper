@@ -18,6 +18,8 @@ input double   InpTP1_ATR     = 1.0;      // TP1: close 50% at this ATR profit
 input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
 input int      InpStartHour   = 10;       // Trade window start hour (London/NY overlap, GMT+2)
 input int      InpEndHour     = 19;       // Trade window end hour, exclusive (GMT+2)
+input int      InpStallBars   = 8;        // Close stalled trade after this many bars
+input double   InpStallMinATR = 0.3;     // Min ATR profit required within stall window
 input int      InpMagic       = 777333;   // Magic number
 
 //--- Inputs: Indicators
@@ -49,6 +51,7 @@ input double   InpATRMinMultiple  = 0.5;   // Min ATR vs 50-period avg (skip if 
 //--- Global Handles & State
 int handleMA, handleSD, handleATR, handleADX, handleATR50;
 ulong partialClosedTicket = 0;  // Tracks which position has had TP1 taken
+datetime entryTime = 0;          // Tracks when current trade was opened
 
 //--- News schedule: high-impact and very-high-impact stored separately
 #define MAX_NEWS 40
@@ -353,20 +356,34 @@ void OnTick() {
 
    // --- POSITION MANAGEMENT ---
    if(SelectOwnPosition()) {
-      bool alreadyPartial = IsPartialClosed();
-
-      // 1. TP1: Close 50% at +InpTP1_ATR profit
-      double profitATR = GetPositionProfitATR(atr[0]);
-      if(!alreadyPartial && profitATR >= InpTP1_ATR) {
-         ScaleOutHalf();
-         Print("TP1 Hit at ", DoubleToString(profitATR, 2), " ATR: 50% Closed. SL moved to Breakeven.");
+      // 0. Stall timeout: close if no progress after X bars
+      if(entryTime > 0) {
+         int barsSinceEntry = iBarShift(TradeSymbol, _Period, entryTime);
+         double profitATR = GetPositionProfitATR(atr[0]);
+         if(barsSinceEntry >= InpStallBars && profitATR < InpStallMinATR) {
+            Print("Stall timeout: ", barsSinceEntry, " bars, ", DoubleToString(profitATR, 2), " ATR profit. Closing.");
+            CloseAllOwnPositions("stalled trade");
+         }
       }
 
-      // 2. TRAILING
-      HandleTrailingStop(atr[0]);
+      // Re-check position still exists after potential stall close
+      if(SelectOwnPosition()) {
+         bool alreadyPartial = IsPartialClosed();
+
+         // 1. TP1: Close 50% at +InpTP1_ATR profit
+         double profitATR = GetPositionProfitATR(atr[0]);
+         if(!alreadyPartial && profitATR >= InpTP1_ATR) {
+            ScaleOutHalf();
+            Print("TP1 Hit at ", DoubleToString(profitATR, 2), " ATR: 50% Closed. SL moved to Breakeven.");
+         }
+
+         // 2. TRAILING
+         HandleTrailingStop(atr[0]);
+      }
    } else {
-      // Reset partial close tracker for next trade
+      // Reset state for next trade
       partialClosedTicket = 0;
+      entryTime = 0;
 
       // --- ENTRY LOGIC ---
       bool inWindow  = (dt.hour >= InpStartHour && dt.hour < InpEndHour);
@@ -516,6 +533,7 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a) {
       Print("Entry failed: retcode=", res.retcode, " comment=", res.comment);
    } else {
       Print("Trade opened: ", EnumToString(type), " ", lot, " lots, SL=", sl);
+      entryTime = TimeCurrent();
    }
 }
 //+------------------------------------------------------------------+
