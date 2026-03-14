@@ -10,13 +10,13 @@
 
 //--- Inputs: Strategy
 input string   TradeSymbol    = "GOLD";
-input double   InpEntryZ      = 2.0;      // Z-Score entry threshold (1.8–2.5)
+input double   InpEntryZ      = 2.5;      // Z-Score entry threshold (1.8–2.5)
 input int      InpADXFilter   = 20;       // ADX range filter (below = ranging)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 2.0;      // ATR multiplier for SL (1.5–2.5)
 input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
-input int      InpStartHour   = 10;       // Trade window start hour
-input int      InpEndHour     = 20;       // Trade window end hour (exclusive)
+input int      InpStartHour   = 1;        // Trade window start hour
+input int      InpEndHour     = 22;       // Trade window end hour (exclusive)
 input int      InpMagic       = 777333;   // Magic number
 
 //--- Inputs: Indicators
