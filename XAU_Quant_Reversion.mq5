@@ -49,22 +49,14 @@ input double   InpATRMinMultiple  = 0.5;   // Min ATR vs 50-period avg (skip if 
 int handleMA, handleSD, handleATR, handleADX, handleATR50;
 string partialTag = "_P1";
 
-//--- News schedule: high-impact and very-high-impact stored separately
+//--- News schedule: red folder (VHI) and orange folder (HI) stored separately
 #define MAX_NEWS 40
-datetime newsHigh[MAX_NEWS];      // High-impact event times
+datetime newsHigh[MAX_NEWS];      // Orange folder (moderate-impact) event times
 int newsHighCount = 0;
-datetime newsVHI[MAX_NEWS];       // Very-high-impact event times (NFP, CPI, FOMC, GDP)
+datetime newsVHI[MAX_NEWS];       // Red folder (high-impact) event times
 int newsVHICount = 0;
 datetime lastNewsLoad = 0;
 
-//--- Very-high-impact event keywords
-string vhiKeywords[] = {"Nonfarm Payrolls", "NFP", "Non-Farm",
-                         "CPI ", "Consumer Price Index",
-                         "FOMC", "Federal Funds Rate", "Interest Rate Decision",
-                         "GDP ", "Gross Domestic Product",
-                         "PCE ", "Core PCE",
-                         "Unemployment Rate",
-                         "Retail Sales"};
 
 //--- Daily loss tracking
 double dailyStartBalance = 0;
@@ -137,13 +129,6 @@ bool IsDailyLossLimitHit() {
 //+------------------------------------------------------------------+
 //  News Filter — uses MQL5 economic calendar
 //+------------------------------------------------------------------+
-bool IsVHIEvent(string eventName) {
-   for(int k = 0; k < ArraySize(vhiKeywords); k++) {
-      if(StringFind(eventName, vhiKeywords[k]) >= 0) return true;
-   }
-   return false;
-}
-
 void LoadNewsEvents() {
    newsHighCount = 0;
    newsVHICount = 0;
@@ -159,24 +144,25 @@ void LoadNewsEvents() {
    for(int i = 0; i < total; i++) {
       MqlCalendarEvent event;
       if(!CalendarEventById(values[i].event_id, event)) continue;
-      if(event.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+      if(event.importance != CALENDAR_IMPORTANCE_HIGH &&
+         event.importance != CALENDAR_IMPORTANCE_MODERATE) continue;
 
       MqlCalendarCountry country;
       if(!CalendarCountryById(event.country_id, country)) continue;
       if(country.currency != "USD") continue;
 
-      // Classify as very-high-impact or regular high-impact
-      if(IsVHIEvent(event.name) && newsVHICount < MAX_NEWS) {
+      // Red folder (HIGH) → VHI, Orange folder (MODERATE) → HI
+      if(event.importance == CALENDAR_IMPORTANCE_HIGH && newsVHICount < MAX_NEWS) {
          newsVHI[newsVHICount] = values[i].time;
          newsVHICount++;
-      } else if(newsHighCount < MAX_NEWS) {
+      } else if(event.importance == CALENDAR_IMPORTANCE_MODERATE && newsHighCount < MAX_NEWS) {
          newsHigh[newsHighCount] = values[i].time;
          newsHighCount++;
       }
    }
 
    lastNewsLoad = TimeGMT();
-   Print("News loaded: ", newsHighCount, " high-impact, ", newsVHICount, " very-high-impact USD events today");
+   Print("News loaded: ", newsHighCount, " orange (HI), ", newsVHICount, " red (VHI) USD events today");
 }
 
 //+------------------------------------------------------------------+

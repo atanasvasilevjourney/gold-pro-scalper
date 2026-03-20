@@ -90,13 +90,6 @@ datetime newsVHI[MAX_NEWS];
 int newsVHICount = 0;
 datetime lastNewsLoad = 0;
 
-string vhiKeywords[] = {"Nonfarm Payrolls", "NFP", "Non-Farm",
-                         "CPI ", "Consumer Price Index",
-                         "FOMC", "Federal Funds Rate", "Interest Rate Decision",
-                         "GDP ", "Gross Domestic Product",
-                         "PCE ", "Core PCE",
-                         "Unemployment Rate",
-                         "Retail Sales"};
 
 //--- Capital protection tracking
 double dailyStartBalance = 0;
@@ -250,13 +243,6 @@ string GetProtectionStatus() {
 //+------------------------------------------------------------------+
 //  News Filter
 //+------------------------------------------------------------------+
-bool IsVHIEvent(string eventName) {
-   for(int k = 0; k < ArraySize(vhiKeywords); k++) {
-      if(StringFind(eventName, vhiKeywords[k]) >= 0) return true;
-   }
-   return false;
-}
-
 void LoadNewsEvents() {
    newsHighCount = 0;
    newsVHICount = 0;
@@ -272,23 +258,25 @@ void LoadNewsEvents() {
    for(int i = 0; i < total; i++) {
       MqlCalendarEvent event;
       if(!CalendarEventById(values[i].event_id, event)) continue;
-      if(event.importance != CALENDAR_IMPORTANCE_HIGH) continue;
+      if(event.importance != CALENDAR_IMPORTANCE_HIGH &&
+         event.importance != CALENDAR_IMPORTANCE_MODERATE) continue;
 
       MqlCalendarCountry country;
       if(!CalendarCountryById(event.country_id, country)) continue;
       if(country.currency != "USD") continue;
 
-      if(IsVHIEvent(event.name) && newsVHICount < MAX_NEWS) {
+      // Red folder (HIGH) → VHI, Orange folder (MODERATE) → HI
+      if(event.importance == CALENDAR_IMPORTANCE_HIGH && newsVHICount < MAX_NEWS) {
          newsVHI[newsVHICount] = values[i].time;
          newsVHICount++;
-      } else if(newsHighCount < MAX_NEWS) {
+      } else if(event.importance == CALENDAR_IMPORTANCE_MODERATE && newsHighCount < MAX_NEWS) {
          newsHigh[newsHighCount] = values[i].time;
          newsHighCount++;
       }
    }
 
    lastNewsLoad = TimeGMT();
-   Print("News loaded: ", newsHighCount, " high-impact, ", newsVHICount, " very-high-impact USD events today");
+   Print("News loaded: ", newsHighCount, " orange (HI), ", newsVHICount, " red (VHI) USD events today");
 }
 
 bool IsNearNews() {
