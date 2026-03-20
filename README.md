@@ -9,7 +9,7 @@ Two **mean-reversion scalping EAs** for MetaTrader 5, designed for aggressive sm
 | **Gold Quant** | `gold-quant-simple-ea.mq5` | GOLD (XAUUSD) | M5 | 1.2 ATR | 2.0 ATR | 1.67:1 |
 | **BTC Quant** | `bitcoin-quant-simple-ea.mq5` | BTCUSD | M15 | 1.5 ATR | 1.5 ATR | 1:1 |
 
-Both are built for a **$50 account at 10% risk per trade** (0.01 lot sizing). No partial closes, no trailing stops — just hard SL/TP on the server.
+Both are built for a **$50 account at 3% risk per trade** (0.01 lot sizing). No partial closes, no trailing stops — just hard SL/TP on the server.
 
 ## How It Works
 
@@ -28,7 +28,7 @@ The EA calculates a **Z-Score** — how many standard deviations price is from i
 | ADX | < 25 | < 22 | Market is ranging, not trending |
 | RSI | off | on (38/62) | BTC needs momentum confirmation to avoid fading trends |
 | Spread | < 35 pts | < 5000 pts | Avoids bad fills during illiquid conditions |
-| Session | 08:00-20:00 GMT+2 | 24/7 | Gold needs London+NY; BTC trades around the clock |
+| Session | 10:00-20:00 broker time | 10:00-20:00 broker time | London+NY overlap session |
 
 ### Exit
 
@@ -41,11 +41,21 @@ Simple and clean — three possible exits:
 
 ### Risk Sizing
 
-Each trade risks **10% of account balance**. Lot size is calculated from the SL distance and symbol tick value. On a $50 account this produces 0.01 lots (minimum on XM micro).
+Each trade risks **3% of account balance**. Lot size is calculated from the SL distance and symbol tick value. On a $50 account this produces 0.01 lots (minimum on XM micro).
+
+### News Filter
+
+The EA uses the MQL5 built-in economic calendar to avoid trading around high-impact USD news events (`CALENDAR_IMPORTANCE_HIGH` — equivalent to Forex Factory red folder news).
+
+- **60 minutes before** a red-folder event: new entries blocked
+- **60 minutes after** a red-folder event: new entries blocked
+- **Pre-news close**: optionally closes all open trades before red-folder news hits
+
+Note: MQL5's `CALENDAR_IMPORTANCE_MODERATE` does not match Forex Factory's orange folder — it includes CFTC positioning and Baker Hughes rig counts which don't move gold. Only `CALENDAR_IMPORTANCE_HIGH` is filtered.
 
 ### Daily Loss Limit
 
-If equity drops **25%** from the day's starting balance, the EA closes all positions and stops trading until the next day.
+If equity drops **30%** from the day's starting balance, the EA closes all positions and stops trading until the next day.
 
 ## Input Parameters
 
@@ -55,11 +65,11 @@ If equity drops **25%** from the day's starting balance, the EA closes all posit
 | `TradeSymbol` | GOLD | BTCUSD | Symbol to trade |
 | `InpEntryZ` | 2.2 | 2.2 | Z-Score threshold for entry |
 | `InpADXFilter` | 25 | 22 | ADX must be below this (ranging market) |
-| `InpRiskPct` | 10.0 | 10.0 | Risk % of balance per trade |
+| `InpRiskPct` | 3.0 | 3.0 | Risk % of balance per trade |
 | `InpATRStop` | 1.2 | 1.5 | ATR multiplier for stop loss |
 | `InpHardTP_ATR` | 2.0 | 1.5 | ATR multiplier for take profit |
-| `InpStartHour` | 8 | 0 | Trading window start (GMT+2) |
-| `InpEndHour` | 20 | 24 | Trading window end (GMT+2) |
+| `InpStartHour` | 10 | 10 | Trading window start (broker time) |
+| `InpEndHour` | 20 | 20 | Trading window end (broker time) |
 | `InpStallBars` | 8 | 6 | Close stalled trade after N bars |
 | `InpStallMinATR` | 0.2 | 0.2 | Min ATR profit within stall window |
 | `InpLoserBars` | 4 | 3 | Close if underwater after N bars |
@@ -86,11 +96,19 @@ If equity drops **25%** from the day's starting balance, the EA closes all posit
 | `InpSlippage` | 30 | 50 | Max slippage in points |
 | `InpMaxSpreadPts` | 35 | 5000 | Max spread in points |
 
+### News Filter
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `InpUseNewsFilter` | true | Enable red-folder news filter |
+| `InpNewsMinsBefore` | 60 | Minutes to pause before red-folder news |
+| `InpNewsMinsAfter` | 60 | Minutes to pause after red-folder news |
+| `InpCloseBeforeNews` | true | Close open trades before red-folder news |
+
 ### Daily Loss Limit
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `InpUseDailyLossLimit` | true | Enable daily loss stop |
-| `InpMaxDailyLossPct` | 25.0 | Max daily loss % before stopping |
+| `InpMaxDailyLossPct` | 30.0 | Max daily loss % before stopping |
 
 ## Installation
 
@@ -112,7 +130,7 @@ Z-Score: -1.45
 ADX: 16.3
 ATR: 4.82
 Spread: 25.0 pts
-Daily P/L: +4.60% / -25.0% limit
+Daily P/L: +4.60% / -30.0% limit
 ```
 
 ## Design Rationale
@@ -126,7 +144,7 @@ These EAs are intentionally simple. On a $50 micro account:
 
 ## Risk Warning
 
-These EAs are for **educational and research purposes**. Trading leveraged instruments carries significant risk. 10% risk per trade is aggressive and can blow an account quickly. Always test on demo first. Past performance does not guarantee future results.
+These EAs are for **educational and research purposes**. Trading leveraged instruments carries significant risk. 3% risk per trade is conservative but can still produce losses. Always test on demo first. Past performance does not guarantee future results.
 
 ## License
 
