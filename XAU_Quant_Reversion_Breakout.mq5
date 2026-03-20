@@ -45,14 +45,12 @@ input string   _indicators_     = "=== INDICATORS ===";
 input int      InpATRPeriod     = 14;       // ATR period
 input int      InpADXPeriod     = 14;       // ADX period
 
-//=== NEWS FILTER ===
+//=== NEWS FILTER (red folder / CALENDAR_IMPORTANCE_HIGH only) ===
 input string   _news_           = "=== NEWS FILTER ===";
 input bool     InpUseNewsFilter      = true;
-input int      InpNewsMinsBefore     = 15;
-input int      InpNewsMinsAfter      = 15;
-input int      InpVHINewsMinsBefore  = 60;
-input int      InpVHINewsMinsAfter   = 60;
-input bool     InpCloseBeforeVHINews = true;
+input int      InpNewsMinsBefore     = 60;
+input int      InpNewsMinsAfter      = 60;
+input bool     InpCloseBeforeNews    = true;
 
 //=== DAILY LOSS LIMIT ===
 input string   _loss_           = "=== DAILY LOSS LIMIT ===";
@@ -75,12 +73,10 @@ string partialTag = "_P1";
 datetime lastBarTime = 0;
 int barsSinceClose = 999;
 
-//--- News schedule
+//--- News schedule: red folder (CALENDAR_IMPORTANCE_HIGH) only
 #define MAX_NEWS 40
-datetime newsHigh[MAX_NEWS];
-int newsHighCount = 0;
-datetime newsVHI[MAX_NEWS];
-int newsVHICount = 0;
+datetime newsRed[MAX_NEWS];
+int newsRedCount = 0;
 datetime lastNewsLoad = 0;
 
 
@@ -170,8 +166,7 @@ double NormalizeLot(double lot) {
 //  NEWS FILTER
 //+------------------------------------------------------------------+
 void LoadNewsEvents() {
-   newsHighCount = 0;
-   newsVHICount = 0;
+   newsRedCount = 0;
    MqlDateTime dt;
    TimeToStruct(TimeCurrent(), dt);
 
@@ -185,25 +180,20 @@ void LoadNewsEvents() {
    for(int i = 0; i < total; i++) {
       MqlCalendarEvent event;
       if(!CalendarEventById(values[i].event_id, event)) continue;
-      if(event.importance != CALENDAR_IMPORTANCE_HIGH &&
-         event.importance != CALENDAR_IMPORTANCE_MODERATE) continue;
+      if(event.importance != CALENDAR_IMPORTANCE_HIGH) continue;
 
       MqlCalendarCountry country;
       if(!CalendarCountryById(event.country_id, country)) continue;
       if(country.currency != "USD") continue;
 
-      // Red folder (HIGH) → very-high-impact, Orange folder (MODERATE) → high-impact
-      if(event.importance == CALENDAR_IMPORTANCE_HIGH && newsVHICount < MAX_NEWS) {
-         newsVHI[newsVHICount] = values[i].time;
-         newsVHICount++;
-      } else if(event.importance == CALENDAR_IMPORTANCE_MODERATE && newsHighCount < MAX_NEWS) {
-         newsHigh[newsHighCount] = values[i].time;
-         newsHighCount++;
+      if(newsRedCount < MAX_NEWS) {
+         newsRed[newsRedCount] = values[i].time;
+         newsRedCount++;
       }
    }
 
    lastNewsLoad = TimeCurrent();
-   Print("News loaded: ", newsVHICount, " (red folder) very-high-impact, ", newsHighCount, " (orange folder) high-impact USD events today");
+   Print("News loaded: ", newsRedCount, " (red folder) high-impact USD events today");
 }
 
 bool IsNearNews() {
@@ -215,29 +205,21 @@ bool IsNearNews() {
    if(dtNow.day != dtLast.day) LoadNewsEvents();
 
    datetime now = TimeCurrent();
-
-   for(int i = 0; i < newsVHICount; i++) {
-      long diff = (long)(newsVHI[i] - now);
-      if(diff > -(InpVHINewsMinsAfter * 60) && diff < (InpVHINewsMinsBefore * 60))
-         return true;
-   }
-
-   for(int i = 0; i < newsHighCount; i++) {
-      long diff = (long)(newsHigh[i] - now);
+   for(int i = 0; i < newsRedCount; i++) {
+      long diff = (long)(newsRed[i] - now);
       if(diff > -(InpNewsMinsAfter * 60) && diff < (InpNewsMinsBefore * 60))
          return true;
    }
-
    return false;
 }
 
-bool IsVHINewsImminent() {
-   if(!InpUseNewsFilter || !InpCloseBeforeVHINews) return false;
+bool IsRedNewsImminent() {
+   if(!InpUseNewsFilter || !InpCloseBeforeNews) return false;
 
    datetime now = TimeCurrent();
-   for(int i = 0; i < newsVHICount; i++) {
-      long diff = (long)(newsVHI[i] - now);
-      if(diff > 0 && diff < (InpVHINewsMinsBefore * 60))
+   for(int i = 0; i < newsRedCount; i++) {
+      long diff = (long)(newsRed[i] - now);
+      if(diff > 0 && diff < (InpNewsMinsBefore * 60))
          return true;
    }
    return false;
@@ -491,7 +473,7 @@ void OnTick() {
    double zScore = (bid - ma[0]) / sd[0];
    bool nearNews = IsNearNews();
    bool lossLimitHit = IsDailyLossLimitHit();
-   bool vhiImminent = IsVHINewsImminent();
+   bool redNewsImminent = IsRedNewsImminent();
 
    // --- DAILY LOSS: close everything and stop ---
    if(lossLimitHit) {
@@ -504,7 +486,7 @@ void OnTick() {
    }
 
    // --- CLOSE BEFORE (RED FOLDER) VERY-HIGH-IMPACT NEWS ---
-   if(vhiImminent) {
+   if(redNewsImminent) {
       if(SelectPositionByMagic(InpMRMagic)) ClosePositionsByMagic(InpMRMagic, "MR (red folder) very-high-impact news");
       if(SelectPositionByMagic(InpTBMagic)) ClosePositionsByMagic(InpTBMagic, "TB (red folder) very-high-impact news");
    }
@@ -617,7 +599,7 @@ void OnTick() {
               (adx[0] < InpMRAdxFilter ? " [RANGING]" : (adx[0] >= InpTBAdxThreshold ? " [TRENDING]" : " [NEUTRAL]")), "\n",
            "  ATR: ", DoubleToString(atr[0], 2), "\n",
            "  Spread: ", DoubleToString(spreadPts, 1), " pts\n",
-           "  News: ", (nearNews ? "BLOCKED" : "clear"), (vhiImminent ? " [RED FOLDER CLOSE]" : ""), "\n",
+           "  News: ", (nearNews ? "BLOCKED" : "clear"), (redNewsImminent ? " [RED FOLDER CLOSE]" : ""), "\n",
            "  Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(InpMaxDailyLossPct, 1), "% limit");
 }
 //+------------------------------------------------------------------+
