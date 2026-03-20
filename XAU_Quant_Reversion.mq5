@@ -213,22 +213,22 @@ double GetRiskPct() {
    if(!InpUseDynamicRisk) return InpRiskPct;
 
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   if(equity < 100)        return 10.0;
-   if(equity < 500)        return 5.0;
-   if(equity < 2000)       return 3.0;
-   if(equity < 10000)      return 2.0;
-   return 1.0;
+   if(equity < 500)        return 10.0;
+   if(equity < 2000)       return 7.0;
+   if(equity < 5000)       return 5.0;
+   if(equity < 20000)      return 3.0;
+   return 1.5;
 }
 
 double GetDailyLossLimitPct() {
    if(!InpUseDynamicRisk) return InpMaxDailyLossPct;
 
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   if(equity < 100)        return 20.0;
-   if(equity < 500)        return 15.0;
-   if(equity < 2000)       return 10.0;
-   if(equity < 10000)      return 8.0;
-   return 5.0;
+   if(equity < 500)        return 25.0;
+   if(equity < 2000)       return 20.0;
+   if(equity < 5000)       return 15.0;
+   if(equity < 20000)      return 10.0;
+   return 7.0;
 }
 
 //+------------------------------------------------------------------+
