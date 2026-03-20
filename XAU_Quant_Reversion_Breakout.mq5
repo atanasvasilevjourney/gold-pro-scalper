@@ -192,7 +192,7 @@ void LoadNewsEvents() {
       if(!CalendarCountryById(event.country_id, country)) continue;
       if(country.currency != "USD") continue;
 
-      // Red folder (HIGH) → VHI, Orange folder (MODERATE) → HI
+      // Red folder (HIGH) → very-high-impact, Orange folder (MODERATE) → high-impact
       if(event.importance == CALENDAR_IMPORTANCE_HIGH && newsVHICount < MAX_NEWS) {
          newsVHI[newsVHICount] = values[i].time;
          newsVHICount++;
@@ -203,7 +203,7 @@ void LoadNewsEvents() {
    }
 
    lastNewsLoad = TimeGMT();
-   Print("News loaded: ", newsHighCount, " orange (HI), ", newsVHICount, " red (VHI) USD events today");
+   Print("News loaded: ", newsVHICount, " (red folder) very-high-impact, ", newsHighCount, " (orange folder) high-impact USD events today");
 }
 
 bool IsNearNews() {
@@ -503,10 +503,10 @@ void OnTick() {
       return;
    }
 
-   // --- CLOSE BEFORE VHI NEWS ---
+   // --- CLOSE BEFORE (RED FOLDER) VERY-HIGH-IMPACT NEWS ---
    if(vhiImminent) {
-      if(SelectPositionByMagic(InpMRMagic)) ClosePositionsByMagic(InpMRMagic, "MR VHI news");
-      if(SelectPositionByMagic(InpTBMagic)) ClosePositionsByMagic(InpTBMagic, "TB VHI news");
+      if(SelectPositionByMagic(InpMRMagic)) ClosePositionsByMagic(InpMRMagic, "MR (red folder) very-high-impact news");
+      if(SelectPositionByMagic(InpTBMagic)) ClosePositionsByMagic(InpTBMagic, "TB (red folder) very-high-impact news");
    }
 
    // Shared entry filters
@@ -617,7 +617,7 @@ void OnTick() {
               (adx[0] < InpMRAdxFilter ? " [RANGING]" : (adx[0] >= InpTBAdxThreshold ? " [TRENDING]" : " [NEUTRAL]")), "\n",
            "  ATR: ", DoubleToString(atr[0], 2), "\n",
            "  Spread: ", DoubleToString(spreadPts, 1), " pts\n",
-           "  News: ", (nearNews ? "BLOCKED" : "clear"), (vhiImminent ? " [VHI CLOSE]" : ""), "\n",
+           "  News: ", (nearNews ? "BLOCKED" : "clear"), (vhiImminent ? " [RED FOLDER CLOSE]" : ""), "\n",
            "  Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(InpMaxDailyLossPct, 1), "% limit");
 }
 //+------------------------------------------------------------------+

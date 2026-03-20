@@ -265,7 +265,7 @@ void LoadNewsEvents() {
       if(!CalendarCountryById(event.country_id, country)) continue;
       if(country.currency != "USD") continue;
 
-      // Red folder (HIGH) → VHI, Orange folder (MODERATE) → HI
+      // Red folder (HIGH) → very-high-impact, Orange folder (MODERATE) → high-impact
       if(event.importance == CALENDAR_IMPORTANCE_HIGH && newsVHICount < MAX_NEWS) {
          newsVHI[newsVHICount] = values[i].time;
          newsVHICount++;
@@ -276,7 +276,7 @@ void LoadNewsEvents() {
    }
 
    lastNewsLoad = TimeGMT();
-   Print("News loaded: ", newsHighCount, " orange (HI), ", newsVHICount, " red (VHI) USD events today");
+   Print("News loaded: ", newsVHICount, " (red folder) very-high-impact, ", newsHighCount, " (orange folder) high-impact USD events today");
 }
 
 bool IsNearNews() {
@@ -674,9 +674,9 @@ void OnTick() {
       return;
    }
 
-   // --- CLOSE BEFORE VERY-HIGH-IMPACT NEWS ---
+   // --- CLOSE BEFORE (RED FOLDER) VERY-HIGH-IMPACT NEWS ---
    if(vhiImminent && SelectOwnPosition()) {
-      CloseAllOwnPositions("VHI news imminent");
+      CloseAllOwnPositions("(red folder) very-high-impact news imminent");
    }
 
    // --- POSITION MANAGEMENT ---
@@ -724,7 +724,7 @@ void OnTick() {
            "ATR: ", DoubleToString(atr[0], 2), "\n",
            "Spread: ", DoubleToString((ask-bid)/SymbolInfoDouble(TradeSymbol,SYMBOL_POINT), 1), " pts\n",
            "News Block: ", (nearNews ? "YES" : "no"),
-           (vhiImminent ? " [VHI CLOSE]" : ""), "\n",
+           (vhiImminent ? " [RED FOLDER CLOSE]" : ""), "\n",
            "Vol Filter: ", (IsVolatilityOk(atr[0]) ? "OK" : "BLOCKED"), "\n",
            "Profit: ", DoubleToString(profitATR, 2), " ATR | ", exitStage, "\n",
            GetProtectionStatus());

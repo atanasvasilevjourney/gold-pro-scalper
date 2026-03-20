@@ -49,11 +49,11 @@ input double   InpATRMinMultiple  = 0.5;   // Min ATR vs 50-period avg (skip if 
 int handleMA, handleSD, handleATR, handleADX, handleATR50;
 string partialTag = "_P1";
 
-//--- News schedule: red folder (VHI) and orange folder (HI) stored separately
+//--- News schedule: red folder (very-high-impact) and orange folder (high-impact) stored separately
 #define MAX_NEWS 40
-datetime newsHigh[MAX_NEWS];      // Orange folder (moderate-impact) event times
+datetime newsHigh[MAX_NEWS];      // (orange folder) high-impact event times
 int newsHighCount = 0;
-datetime newsVHI[MAX_NEWS];       // Red folder (high-impact) event times
+datetime newsVHI[MAX_NEWS];       // (red folder) very-high-impact event times
 int newsVHICount = 0;
 datetime lastNewsLoad = 0;
 
@@ -151,7 +151,7 @@ void LoadNewsEvents() {
       if(!CalendarCountryById(event.country_id, country)) continue;
       if(country.currency != "USD") continue;
 
-      // Red folder (HIGH) → VHI, Orange folder (MODERATE) → HI
+      // Red folder (HIGH) → very-high-impact, Orange folder (MODERATE) → high-impact
       if(event.importance == CALENDAR_IMPORTANCE_HIGH && newsVHICount < MAX_NEWS) {
          newsVHI[newsVHICount] = values[i].time;
          newsVHICount++;
@@ -162,7 +162,7 @@ void LoadNewsEvents() {
    }
 
    lastNewsLoad = TimeGMT();
-   Print("News loaded: ", newsHighCount, " orange (HI), ", newsVHICount, " red (VHI) USD events today");
+   Print("News loaded: ", newsVHICount, " (red folder) very-high-impact, ", newsHighCount, " (orange folder) high-impact USD events today");
 }
 
 //+------------------------------------------------------------------+
@@ -315,9 +315,9 @@ void OnTick() {
       return;
    }
 
-   // --- CLOSE BEFORE VERY-HIGH-IMPACT NEWS ---
+   // --- CLOSE BEFORE (RED FOLDER) VERY-HIGH-IMPACT NEWS ---
    if(vhiImminent && SelectOwnPosition()) {
-      CloseAllOwnPositions("VHI news imminent");
+      CloseAllOwnPositions("(red folder) very-high-impact news imminent");
    }
 
    // --- POSITION MANAGEMENT ---
@@ -354,7 +354,7 @@ void OnTick() {
            "ATR: ", DoubleToString(atr[0], 2), "\n",
            "Spread: ", DoubleToString((ask-bid)/SymbolInfoDouble(TradeSymbol,SYMBOL_POINT), 1), " pts\n",
            "News Block: ", (nearNews ? "YES" : "no"),
-           (vhiImminent ? " [VHI CLOSE]" : ""), "\n",
+           (vhiImminent ? " [RED FOLDER CLOSE]" : ""), "\n",
            "Vol Filter: ", (IsVolatilityOk(atr[0]) ? "OK" : "BLOCKED"), "\n",
            "Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(InpMaxDailyLossPct, 1), "% limit");
 }
