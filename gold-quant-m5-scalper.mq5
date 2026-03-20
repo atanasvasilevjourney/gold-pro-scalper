@@ -261,9 +261,9 @@ void LoadNewsEvents() {
    newsHighCount = 0;
    newsVHICount = 0;
    MqlDateTime dt;
-   TimeToStruct(TimeCurrent(), dt);
+   TimeToStruct(TimeGMT(), dt);
 
-   datetime dayStart = TimeCurrent() - (dt.hour * 3600 + dt.min * 60 + dt.sec);
+   datetime dayStart = TimeGMT() - (dt.hour * 3600 + dt.min * 60 + dt.sec);
    datetime dayEnd   = dayStart + 86400;
 
    MqlCalendarValue values[];
@@ -287,7 +287,7 @@ void LoadNewsEvents() {
       }
    }
 
-   lastNewsLoad = TimeCurrent();
+   lastNewsLoad = TimeGMT();
    Print("News loaded: ", newsHighCount, " high-impact, ", newsVHICount, " very-high-impact USD events today");
 }
 
@@ -295,11 +295,11 @@ bool IsNearNews() {
    if(!InpUseNewsFilter) return false;
 
    MqlDateTime dtNow, dtLast;
-   TimeToStruct(TimeCurrent(), dtNow);
+   TimeToStruct(TimeGMT(), dtNow);
    TimeToStruct(lastNewsLoad, dtLast);
    if(dtNow.day != dtLast.day) LoadNewsEvents();
 
-   datetime now = TimeCurrent();
+   datetime now = TimeGMT();
 
    for(int i = 0; i < newsVHICount; i++) {
       long diff = (long)(newsVHI[i] - now);
@@ -319,7 +319,7 @@ bool IsNearNews() {
 bool IsVHINewsImminent() {
    if(!InpUseNewsFilter || !InpCloseBeforeVHINews) return false;
 
-   datetime now = TimeCurrent();
+   datetime now = TimeGMT();
    for(int i = 0; i < newsVHICount; i++) {
       long diff = (long)(newsVHI[i] - now);
       if(diff > 0 && diff < (InpVHINewsMinsBefore * 60))
