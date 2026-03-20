@@ -12,7 +12,8 @@
 input string   TradeSymbol    = "GOLD";
 input double   InpEntryZ      = 2.4;      // Z-Score entry threshold (1.8–2.5)
 input int      InpADXFilter   = 20;       // ADX range filter (below = ranging)
-input double   InpRiskPct     = 10.0;     // Risk % per trade
+input bool     InpUseDynamicRisk = true;  // Enable equity-based risk tiers (overrides InpRiskPct)
+input double   InpRiskPct     = 10.0;     // Risk % per trade (used when dynamic risk is off)
 input double   InpSLPoints    = 800;      // Fixed SL in points (survives gold spikes)
 input double   InpHardTPPoints = 1500;    // Hard TP in points (server-side safety net, wide)
 input double   InpExitZ       = 0.3;      // Z-Score exit threshold (close when Z returns near 0)
@@ -116,9 +117,10 @@ bool IsDailyLossLimitHit() {
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double lossPercent = ((dailyStartBalance - equity) / dailyStartBalance) * 100.0;
 
-   if(lossPercent >= InpMaxDailyLossPct) {
+   double dailyLimit = GetDailyLossLimitPct();
+   if(lossPercent >= dailyLimit) {
       dailyLossHit = true;
-      Print("DAILY LOSS LIMIT HIT: ", DoubleToString(lossPercent, 2), "% lost. Trading stopped for today.");
+      Print("DAILY LOSS LIMIT HIT: ", DoubleToString(lossPercent, 2), "% lost (limit ", DoubleToString(dailyLimit, 1), "%). Trading stopped for today.");
       return true;
    }
    return false;
@@ -202,6 +204,31 @@ bool IsVolatilityOk(double atrFast) {
    if(ratio > InpATRMaxMultiple || ratio < InpATRMinMultiple) return false;
 
    return true;
+}
+
+//+------------------------------------------------------------------+
+//  Dynamic Risk Tiers — scales risk down as equity grows
+//+------------------------------------------------------------------+
+double GetRiskPct() {
+   if(!InpUseDynamicRisk) return InpRiskPct;
+
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity < 100)        return 10.0;
+   if(equity < 500)        return 5.0;
+   if(equity < 2000)       return 3.0;
+   if(equity < 10000)      return 2.0;
+   return 1.0;
+}
+
+double GetDailyLossLimitPct() {
+   if(!InpUseDynamicRisk) return InpMaxDailyLossPct;
+
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(equity < 100)        return 20.0;
+   if(equity < 500)        return 15.0;
+   if(equity < 2000)       return 10.0;
+   if(equity < 10000)      return 8.0;
+   return 5.0;
 }
 
 //+------------------------------------------------------------------+
@@ -344,6 +371,8 @@ void OnTick() {
    double dailyLossPct = ((dailyStartBalance - AccountInfoDouble(ACCOUNT_EQUITY)) / dailyStartBalance) * 100.0;
 
    Comment("--- N30 GOLD REVERSION v5 ---\n",
+           "Equity: $", DoubleToString(AccountInfoDouble(ACCOUNT_EQUITY), 2), "\n",
+           "Risk: ", DoubleToString(GetRiskPct(), 1), "% | DLL: ", DoubleToString(GetDailyLossLimitPct(), 1), "%\n",
            "Z-Score: ", DoubleToString(zScore, 2), "\n",
            "ADX: ", DoubleToString(adx[0], 1), "\n",
            "ATR: ", DoubleToString(atr[0], 2), "\n",
@@ -351,7 +380,7 @@ void OnTick() {
            "News Block: ", (nearNews ? "YES" : "no"),
            (redNewsImminent ? " [RED FOLDER CLOSE]" : ""), "\n",
            "Vol Filter: ", (volOk ? "OK" : "BLOCKED"), "\n",
-           "Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(InpMaxDailyLossPct, 1), "% limit");
+           "Daily P/L: ", DoubleToString(-dailyLossPct, 2), "% / -", DoubleToString(GetDailyLossLimitPct(), 1), "% limit");
 }
 
 //+------------------------------------------------------------------+
@@ -394,7 +423,8 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore, doubl
    double tpD = InpHardTPPoints * point;
    double sl = (type == ORDER_TYPE_BUY) ? (p - slD) : (p + slD);
    double tp = (type == ORDER_TYPE_BUY) ? (p + tpD) : (p - tpD);
-   double risk = AccountInfoDouble(ACCOUNT_BALANCE) * (InpRiskPct / 100.0);
+   double riskPct = GetRiskPct();
+   double risk = AccountInfoDouble(ACCOUNT_BALANCE) * (riskPct / 100.0);
    double tickV = SymbolInfoDouble(TradeSymbol, SYMBOL_TRADE_TICK_VALUE);
    double tickS = SymbolInfoDouble(TradeSymbol, SYMBOL_TRADE_TICK_SIZE);
 
