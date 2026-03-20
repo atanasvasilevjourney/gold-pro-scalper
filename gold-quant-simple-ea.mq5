@@ -15,7 +15,7 @@ input int      InpADXFilter   = 25;       // ADX range filter (allows mild trend
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 1.2;      // ATR multiplier for SL (tight for mean reversion)
 input double   InpHardTP_ATR  = 2.0;      // Hard TP (ATR multiplier) — server-side, always set
-input int      InpStartHour   = 8;        // Trade window start hour (GMT+2)
+input int      InpStartHour   = 10;        // Trade window start hour (GMT+2)
 input int      InpEndHour     = 20;       // Trade window end hour, exclusive (GMT+2)
 input int      InpStallBars   = 8;        // Close stalled trade after this many bars
 input double   InpStallMinATR = 0.2;     // Min ATR profit required within stall window
@@ -39,7 +39,7 @@ input double   InpMaxSpreadPts = 35.0;    // Max allowed spread in points (tight
 
 //--- Inputs: Daily Loss Limit
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 25.0;   // Max daily loss % (survive to trade tomorrow)
+input double   InpMaxDailyLossPct    = 30.0;   // Max daily loss % (survive to trade tomorrow)
 
 //--- Global Handles & State
 int handleMA, handleSD, handleATR, handleADX, handleRSI;

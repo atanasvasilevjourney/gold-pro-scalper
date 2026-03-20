@@ -13,8 +13,8 @@ input string   _shared_         = "=== SHARED SETTINGS ===";
 input string   TradeSymbol      = "GOLD";
 input double   InpRiskPct       = 10.0;     // Risk % per trade (Mean Reversion)
 input double   InpTBRiskPct     = 3.0;      // Risk % per trade (Trend Breakout)
-input int      InpStartHour     = 1;        // Trade window start hour
-input int      InpEndHour       = 22;       // Trade window end hour (exclusive)
+input int      InpStartHour     = 10;        // Trade window start hour
+input int      InpEndHour       = 20;       // Trade window end hour (exclusive)
 input int      InpSlippage      = 30;       // Max slippage in points
 input double   InpMaxSpreadPts  = 50.0;     // Max allowed spread in points
 
@@ -57,7 +57,7 @@ input bool     InpCloseBeforeVHINews = true;
 //=== DAILY LOSS LIMIT ===
 input string   _loss_           = "=== DAILY LOSS LIMIT ===";
 input bool     InpUseDailyLossLimit  = true;
-input double   InpMaxDailyLossPct    = 10.0;
+input double   InpMaxDailyLossPct    = 30.0;
 
 //=== VOLATILITY FILTER ===
 input string   _vol_            = "=== VOLATILITY FILTER ===";

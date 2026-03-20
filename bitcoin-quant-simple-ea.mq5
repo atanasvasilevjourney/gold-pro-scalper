@@ -15,8 +15,8 @@ input int      InpADXFilter   = 22;       // ADX range filter (moderate — filt
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 1.5;      // ATR multiplier for SL (wider — BTC whipsaws more)
 input double   InpHardTP_ATR  = 1.5;      // Hard TP (ATR multiplier) — take profit fast, BTC snaps back quick
-input int      InpStartHour   = 0;        // Trade window start hour (24/7 market)
-input int      InpEndHour     = 24;       // Trade window end hour (spread filter gates quality)
+input int      InpStartHour   = 10;        // Trade window start hour (24/7 market)
+input int      InpEndHour     = 20;       // Trade window end hour (spread filter gates quality)
 input int      InpStallBars   = 6;        // Close stalled trade after this many bars (6x15m = 90min)
 input double   InpStallMinATR = 0.2;      // Min ATR profit required within stall window
 input int      InpLoserBars   = 3;        // Close if profit < 0 after this many bars (3x15m = 45min)
@@ -39,7 +39,7 @@ input double   InpMaxSpreadPts = 5000.0;  // Max spread in points (~$50 if point
 
 //--- Inputs: Daily Loss Limit
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 25.0;  // Max daily loss % (survive to trade tomorrow)
+input double   InpMaxDailyLossPct    = 30.0;  // Max daily loss % (survive to trade tomorrow)
 
 //--- Global Handles & State
 int handleMA, handleSD, handleATR, handleADX, handleRSI;

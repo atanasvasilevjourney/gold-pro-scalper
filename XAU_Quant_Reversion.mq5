@@ -15,8 +15,8 @@ input int      InpADXFilter   = 20;       // ADX range filter (below = ranging)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 2.0;      // ATR multiplier for SL (1.5–2.5)
 input double   InpTrailingATR = 1.5;      // ATR multiplier for trailing
-input int      InpStartHour   = 1;        // Trade window start hour
-input int      InpEndHour     = 22;       // Trade window end hour (exclusive)
+input int      InpStartHour   = 10;        // Trade window start hour
+input int      InpEndHour     = 20;       // Trade window end hour (exclusive)
 input int      InpMagic       = 777333;   // Magic number
 
 //--- Inputs: Indicators
@@ -38,7 +38,7 @@ input bool     InpCloseBeforeVHINews = true;  // Close open trades before very-h
 
 //--- Inputs: Daily Loss Limit
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 10.0;   // Max daily loss % of balance (stops trading)
+input double   InpMaxDailyLossPct    = 30.0;   // Max daily loss % of balance (stops trading)
 
 //--- Inputs: Volatility Filter
 input bool     InpUseVolFilter    = true;  // Enable volatility-adjusted entry
