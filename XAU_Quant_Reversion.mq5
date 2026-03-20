@@ -10,7 +10,7 @@
 
 //--- Inputs: Strategy
 input string   TradeSymbol    = "GOLD";
-input double   InpEntryZ      = 2.5;      // Z-Score entry threshold (1.8–2.5)
+input double   InpEntryZ      = 2.4;      // Z-Score entry threshold (1.8–2.5)
 input int      InpADXFilter   = 20;       // ADX range filter (below = ranging)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 2.0;      // ATR multiplier for SL (1.5–2.5)
@@ -36,7 +36,7 @@ input bool     InpCloseBeforeNews    = true;  // Close open trades before red-fo
 
 //--- Inputs: Daily Loss Limit
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 30.0;   // Max daily loss % of balance (stops trading)
+input double   InpMaxDailyLossPct    = 20.0;   // Max daily loss % of balance (stops trading)
 
 //--- Inputs: Volatility Filter
 input bool     InpUseVolFilter    = true;  // Enable volatility-adjusted entry

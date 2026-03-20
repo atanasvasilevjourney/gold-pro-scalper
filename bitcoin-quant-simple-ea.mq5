@@ -10,7 +10,7 @@
 
 //--- Inputs: Strategy
 input string   TradeSymbol    = "BTCUSD";
-input double   InpEntryZ      = 2.2;      // Z-Score entry (back to proven gold threshold)
+input double   InpEntryZ      = 2.4;      // Z-Score entry (back to proven gold threshold)
 input int      InpADXFilter   = 22;       // ADX range filter (moderate — filters strong trends only)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 1.5;      // ATR multiplier for SL (wider — BTC whipsaws more)
@@ -39,7 +39,7 @@ input double   InpMaxSpreadPts = 5000.0;  // Max spread in points (~$50 if point
 
 //--- Inputs: Daily Loss Limit
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 30.0;  // Max daily loss % (survive to trade tomorrow)
+input double   InpMaxDailyLossPct    = 20.0;  // Max daily loss % (survive to trade tomorrow)
 
 //--- Global Handles & State
 int handleMA, handleSD, handleATR, handleADX, handleRSI;

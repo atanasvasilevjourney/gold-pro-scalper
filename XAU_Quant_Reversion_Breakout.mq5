@@ -21,7 +21,7 @@ input double   InpMaxSpreadPts  = 50.0;     // Max allowed spread in points
 //=== MEAN REVERSION INPUTS ===
 input string   _reversion_      = "=== MEAN REVERSION ===";
 input bool     InpUseReversion  = true;     // Enable Mean Reversion strategy
-input double   InpEntryZ        = 2.5;      // Z-Score entry threshold
+input double   InpEntryZ        = 2.4;      // Z-Score entry threshold
 input int      InpMRAdxFilter   = 20;       // ADX below this = ranging
 input double   InpMRATRStop     = 2.0;      // ATR multiplier for SL
 input double   InpMRTrailingATR = 1.5;      // ATR multiplier for trailing
@@ -55,7 +55,7 @@ input bool     InpCloseBeforeNews    = true;
 //=== DAILY LOSS LIMIT ===
 input string   _loss_           = "=== DAILY LOSS LIMIT ===";
 input bool     InpUseDailyLossLimit  = true;
-input double   InpMaxDailyLossPct    = 30.0;
+input double   InpMaxDailyLossPct    = 20.0;
 
 //=== VOLATILITY FILTER ===
 input string   _vol_            = "=== VOLATILITY FILTER ===";

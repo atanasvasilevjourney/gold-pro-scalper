@@ -10,7 +10,7 @@
 
 //--- Inputs: Strategy
 input string   TradeSymbol    = "GOLD";
-input double   InpEntryZ      = 2.2;      // Z-Score entry threshold (2.0–2.5 aggressive frequency)
+input double   InpEntryZ      = 2.4;      // Z-Score entry threshold (2.0–2.5 aggressive frequency)
 input int      InpADXFilter   = 25;       // ADX range filter (allows mild trends)
 input double   InpRiskPct     = 10.0;     // Risk % per trade
 input double   InpATRStop     = 1.2;      // ATR multiplier for SL (tight for mean reversion)
@@ -39,7 +39,7 @@ input double   InpMaxSpreadPts = 35.0;    // Max allowed spread in points (tight
 
 //--- Inputs: Daily Loss Limit
 input bool     InpUseDailyLossLimit  = true;  // Enable max daily loss stop
-input double   InpMaxDailyLossPct    = 30.0;   // Max daily loss % (survive to trade tomorrow)
+input double   InpMaxDailyLossPct    = 20.0;   // Max daily loss % (survive to trade tomorrow)
 
 //--- Global Handles & State
 int handleMA, handleSD, handleATR, handleADX, handleRSI;
