@@ -10,7 +10,8 @@
 
 //=== SHARED INPUTS ===
 input string   _shared_         = "=== SHARED SETTINGS ===";
-input string   TradeSymbol      = "GOLD";
+input string   InpTradeSymbol   = "GOLD";        // Trade symbol (GOLD, XAUUSD, etc.)
+string         TradeSymbol;
 input bool     InpUseDynamicRisk = true;    // Enable equity-based risk tiers
 input double   InpRiskPct       = 10.0;     // Risk % per trade (Mean Reversion, when dynamic off)
 input double   InpTBRiskPct     = 3.0;      // Risk % per trade (Trend Breakout, when dynamic off)
@@ -73,13 +74,17 @@ input double   InpATRMinMultiple  = 0.5;   // Min ATR ratio (both: skip if too q
 int handleMA, handleSD, handleATR, handleADX, handleATR50, handleEMA;
 
 //--- Mean Reversion state
-string partialTag = "_P1";
 datetime lastMRTrailBar = 0;
+ulong partialClosedTicket = 0;  // Tracks MR position that has been partially closed
 
 //--- Trend Breakout state
 datetime lastBarTime = 0;
 datetime lastTBTrailBar = 0;
 int barsSinceClose = 999;
+
+//--- Track last position counts for cooldown detection
+int lastMRCount = 0;
+int lastTBCount = 0;
 
 //--- News schedule: red folder (CALENDAR_IMPORTANCE_HIGH) only
 #define MAX_NEWS 40
@@ -95,6 +100,17 @@ bool   dailyLossHit = false;
 
 //+------------------------------------------------------------------+
 int OnInit() {
+   // Initialize and validate symbol
+   TradeSymbol = InpTradeSymbol;
+   if(!SymbolInfoInteger(TradeSymbol, SYMBOL_EXIST)) {
+      Print("Symbol ", TradeSymbol, " not found - trying XAUUSD");
+      TradeSymbol = "XAUUSD";
+      if(!SymbolInfoInteger(TradeSymbol, SYMBOL_EXIST)) {
+         Print("Neither GOLD nor XAUUSD found. Please set TradeSymbol manually.");
+         return(INIT_FAILED);
+      }
+   }
+
    handleMA    = iMA(TradeSymbol, _Period, InpMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
    handleSD    = iStdDev(TradeSymbol, _Period, InpMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
    handleATR   = iATR(TradeSymbol, _Period, InpATRPeriod);
@@ -294,7 +310,7 @@ bool IsVolOkForBreakout(double atrFast) {
 //+------------------------------------------------------------------+
 //  POSITION HELPERS
 //+------------------------------------------------------------------+
-bool SelectPositionByMagic(int magic) {
+bool SelectPositionByMagic(long magic) {
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
@@ -306,7 +322,7 @@ bool SelectPositionByMagic(int magic) {
    return false;
 }
 
-int CountPositionsByMagic(int magic) {
+int CountPositionsByMagic(long magic) {
    int count = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
@@ -320,11 +336,11 @@ int CountPositionsByMagic(int magic) {
 }
 
 bool IsPartialClosed() {
-   string comment = PositionGetString(POSITION_COMMENT);
-   return (StringFind(comment, partialTag) >= 0);
+   ulong currentTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+   return (currentTicket == partialClosedTicket);
 }
 
-void ClosePositionsByMagic(int magic, string reason) {
+void ClosePositionsByMagic(long magic, string reason) {
    for(int i = PositionsTotal() - 1; i >= 0; i--) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
@@ -343,7 +359,9 @@ void ClosePositionsByMagic(int magic, string reason) {
       req.deviation = InpSlippage;
       req.comment  = reason;
       uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
-      req.type_filling = (fill & SYMBOL_FILLING_FOK) ? ORDER_FILLING_FOK : ORDER_FILLING_IOC;
+      if(fill & SYMBOL_FILLING_FOK) req.type_filling = ORDER_FILLING_FOK;
+      else if(fill & SYMBOL_FILLING_IOC) req.type_filling = ORDER_FILLING_IOC;
+      else req.type_filling = ORDER_FILLING_RETURN;
 
       if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
          Print("Close failed (", reason, "): ticket=", ticket, " retcode=", res.retcode);
@@ -414,6 +432,7 @@ void ScaleOutHalf() {
    MqlTradeRequest req = {}; MqlTradeResult res = {};
    double vol = PositionGetDouble(POSITION_VOLUME);
    double halfVol = NormalizeLot(vol * 0.5);
+   ulong posTicket = (ulong)PositionGetInteger(POSITION_TICKET);
 
    if(halfVol >= vol) {
       Print("MR: Cannot scale out: volume too small to split");
@@ -421,26 +440,32 @@ void ScaleOutHalf() {
    }
 
    req.action = TRADE_ACTION_DEAL;
-   req.position = (ulong)PositionGetInteger(POSITION_TICKET);
+   req.position = posTicket;
    req.symbol = TradeSymbol;
    req.volume = halfVol;
    req.type = ((ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?ORDER_TYPE_SELL:ORDER_TYPE_BUY;
    req.price = (req.type==ORDER_TYPE_SELL)?SymbolInfoDouble(TradeSymbol, SYMBOL_BID):SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
    req.deviation = InpSlippage;
-   req.comment = "MR TP1 50%" + partialTag;
+   req.comment = "MR TP1 50%";
    uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
-   req.type_filling = (fill & SYMBOL_FILLING_FOK) ? ORDER_FILLING_FOK : ORDER_FILLING_IOC;
+   if(fill & SYMBOL_FILLING_FOK) req.type_filling = ORDER_FILLING_FOK;
+   else if(fill & SYMBOL_FILLING_IOC) req.type_filling = ORDER_FILLING_IOC;
+   else req.type_filling = ORDER_FILLING_RETURN;
 
    if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
       Print("MR: ScaleOut failed: retcode=", res.retcode);
       return;
    }
 
+   // Mark this position as partially closed
+   partialClosedTicket = posTicket;
+
    // Move SL to breakeven
    if(!SelectPositionByMagic(InpMRMagic)) return;
 
    double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
    double currentTP  = PositionGetDouble(POSITION_TP);
+   string origComment = PositionGetString(POSITION_COMMENT);
    ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
    double spread     = SymbolInfoDouble(TradeSymbol, SYMBOL_ASK) - SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
    int    digits     = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
@@ -451,6 +476,8 @@ void ScaleOutHalf() {
    else
       beSL = NormalizeDouble(entryPrice - spread, digits);
 
+   // Modify SL to breakeven - note: MQL5 doesn't allow comment change via SLTP
+   // We'll track partial close state via a global variable instead
    MqlTradeRequest beReq = {}; MqlTradeResult beRes = {};
    beReq.action   = TRADE_ACTION_SLTP;
    beReq.position = (ulong)PositionGetInteger(POSITION_TICKET);
@@ -466,7 +493,7 @@ void ScaleOutHalf() {
 //+------------------------------------------------------------------+
 //  EXECUTE TRADE (shared, parameterized)
 //+------------------------------------------------------------------+
-void OpenTrade(ENUM_ORDER_TYPE type, double p, double slPoints, double tpPoints, int magic, string comment, bool isTrendBreakout = false) {
+void OpenTrade(ENUM_ORDER_TYPE type, double p, double slPoints, double tpPoints, long magic, string comment, bool isTrendBreakout = false) {
    MqlTradeRequest req = {}; MqlTradeResult res = {};
    double point = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
    double slD = slPoints * point;
@@ -488,6 +515,17 @@ void OpenTrade(ENUM_ORDER_TYPE type, double p, double slPoints, double tpPoints,
    lot = NormalizeLot(lot);
    int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
 
+   // Check sufficient margin before opening trade
+   double marginRequired;
+   if(!OrderCalcMargin(type, TradeSymbol, lot, p, marginRequired)) {
+      Print("Failed to calculate margin, skipping trade");
+      return;
+   }
+   if(marginRequired > AccountInfoDouble(ACCOUNT_MARGIN_FREE)) {
+      Print("Insufficient margin: required=", marginRequired, " free=", AccountInfoDouble(ACCOUNT_MARGIN_FREE));
+      return;
+   }
+
    req.action       = TRADE_ACTION_DEAL;
    req.symbol       = TradeSymbol;
    req.volume       = lot;
@@ -499,7 +537,9 @@ void OpenTrade(ENUM_ORDER_TYPE type, double p, double slPoints, double tpPoints,
    req.deviation    = InpSlippage;
    req.comment      = TruncateComment(comment);
    uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
-   req.type_filling = (fill & SYMBOL_FILLING_FOK) ? ORDER_FILLING_FOK : ORDER_FILLING_IOC;
+   if(fill & SYMBOL_FILLING_FOK) req.type_filling = ORDER_FILLING_FOK;
+   else if(fill & SYMBOL_FILLING_IOC) req.type_filling = ORDER_FILLING_IOC;
+   else req.type_filling = ORDER_FILLING_RETURN;
 
    if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
       Print("Entry failed: retcode=", res.retcode, " comment=", res.comment);
@@ -589,23 +629,26 @@ void OnTick() {
             }
          }
       } else {
+         // Reset partial close tracking when no MR position exists
+         partialClosedTicket = 0;
+
          // Entry logic
          bool isRanging = (adx[0] < InpMRAdxFilter);
          bool volOk = IsVolOkForReversion(atr[0]);
 
-         if(CountPositionsByMagic(InpMRMagic) >= InpMaxMRPositions) return;  // max positions limit
+         if(CountPositionsByMagic(InpMRMagic) < InpMaxMRPositions) {
+            if(inWindow && isRanging && spreadOk && volOk && !nearNews && MathAbs(zScore) > InpEntryZ) {
+               string dir = (zScore < 0) ? "B" : "S";
+               string comment = "MR " + dir
+                              + "|Z" + DoubleToString(zScore, 2)
+                              + "|A" + DoubleToString(adx[0], 0)
+                              + "|R" + DoubleToString(atr[0], 2);
 
-         if(inWindow && isRanging && spreadOk && volOk && !nearNews && MathAbs(zScore) > InpEntryZ) {
-            string dir = (zScore < 0) ? "B" : "S";
-            string comment = "MR " + dir
-                           + "|Z" + DoubleToString(zScore, 2)
-                           + "|A" + DoubleToString(adx[0], 0)
-                           + "|R" + DoubleToString(atr[0], 2);
-
-            if(zScore < 0)
-               OpenTrade(ORDER_TYPE_BUY, ask, InpMRSLPoints, InpMRHardTPPoints, InpMRMagic, comment, false);
-            else
-               OpenTrade(ORDER_TYPE_SELL, bid, InpMRSLPoints, InpMRHardTPPoints, InpMRMagic, comment, false);
+               if(zScore < 0)
+                  OpenTrade(ORDER_TYPE_BUY, ask, InpMRSLPoints, InpMRHardTPPoints, InpMRMagic, comment, false);
+               else
+                  OpenTrade(ORDER_TYPE_SELL, bid, InpMRSLPoints, InpMRHardTPPoints, InpMRMagic, comment, false);
+            }
          }
       }
    }
@@ -614,6 +657,14 @@ void OnTick() {
    // STRATEGY 2: TREND BREAKOUT
    //=================================================================
    if(InpUseBreakout) {
+      // Track position count changes for cooldown trigger
+      int currentTBCount = CountPositionsByMagic(InpTBMagic);
+      if(lastTBCount > 0 && currentTBCount == 0) {
+         // TB position just closed - start cooldown
+         barsSinceClose = 0;
+      }
+      lastTBCount = currentTBCount;
+
       if(SelectPositionByMagic(InpTBMagic)) {
          // Position management: trailing stop (new bar only)
          datetime curBar = iTime(TradeSymbol, _Period, 0);
@@ -629,13 +680,11 @@ void OnTick() {
 
             if(barsSinceClose < InpCooldownBars) {
                barsSinceClose++;
-            } else {
+            } else if(CountPositionsByMagic(InpTBMagic) < InpMaxTBPositions) {
                double donchHigh = DonchianHigh(InpDonchianPeriod);
                double donchLow  = DonchianLow(InpDonchianPeriod);
 
                if(donchHigh != 0 && donchLow != 0) {
-                  if(CountPositionsByMagic(InpTBMagic) >= InpMaxTBPositions) return;  // max positions limit
-
                   bool isTrending = (adx[0] >= InpTBAdxThreshold);
                   bool volOk = IsVolOkForBreakout(atr[0]);
 
@@ -647,7 +696,6 @@ void OnTick() {
                                        + "|DI" + DoubleToString(diSpread, 1)
                                        + "|DH" + DoubleToString(donchHigh, 1);
                         OpenTrade(ORDER_TYPE_BUY, ask, InpTBSLPoints, InpTBHardTPPoints, InpTBMagic, comment, true);
-                        barsSinceClose = 999;
                      }
                      // SHORT breakout: price below Donchian low, DI- > DI+, price below EMA
                      else if(bid < donchLow && diMinus[0] > diPlus[0] && ask < ema[0]) {
@@ -655,7 +703,6 @@ void OnTick() {
                                        + "|DI" + DoubleToString(diSpread, 1)
                                        + "|DL" + DoubleToString(donchLow, 1);
                         OpenTrade(ORDER_TYPE_SELL, bid, InpTBSLPoints, InpTBHardTPPoints, InpTBMagic, comment, true);
-                        barsSinceClose = 999;
                      }
                   }
                }

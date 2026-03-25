@@ -9,7 +9,8 @@
 #property description "N30 Gold Reversion - Mean Reversion Z-Score EA"
 
 //--- Inputs: Strategy
-input string   TradeSymbol    = "GOLD";
+input string   InpTradeSymbol = "GOLD";        // Trade symbol (GOLD, XAUUSD, etc.)
+string         TradeSymbol;
 input double   InpEntryZ      = 2.4;      // Z-Score entry threshold (1.8–2.5)
 input int      InpADXFilter   = 20;       // ADX range filter (below = ranging)
 input bool     InpUseDynamicRisk = true;  // Enable equity-based risk tiers (overrides InpRiskPct)
@@ -66,6 +67,17 @@ datetime lastTrailBar = 0;
 
 //+------------------------------------------------------------------+
 int OnInit() {
+   // Initialize and validate symbol
+   TradeSymbol = InpTradeSymbol;
+   if(!SymbolInfoInteger(TradeSymbol, SYMBOL_EXIST)) {
+      Print("Symbol ", TradeSymbol, " not found - trying XAUUSD");
+      TradeSymbol = "XAUUSD";
+      if(!SymbolInfoInteger(TradeSymbol, SYMBOL_EXIST)) {
+         Print("Neither GOLD nor XAUUSD found. Please set TradeSymbol manually.");
+         return(INIT_FAILED);
+      }
+   }
+
    handleMA    = iMA(TradeSymbol, _Period, InpMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
    handleSD    = iStdDev(TradeSymbol, _Period, InpMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
    handleATR   = iATR(TradeSymbol, _Period, InpATRPeriod);
@@ -239,7 +251,7 @@ bool SelectOwnPosition() {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(PositionGetString(POSITION_SYMBOL) == TradeSymbol &&
-         PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+         PositionGetInteger(POSITION_MAGIC) == (long)InpMagic) {
          return true;
       }
    }
@@ -253,7 +265,7 @@ int CountOwnPositions() {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(PositionGetString(POSITION_SYMBOL) == TradeSymbol &&
-         PositionGetInteger(POSITION_MAGIC) == InpMagic) {
+         PositionGetInteger(POSITION_MAGIC) == (long)InpMagic) {
          count++;
       }
    }
@@ -285,7 +297,7 @@ void CloseAllOwnPositions(string reason) {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0) continue;
       if(PositionGetString(POSITION_SYMBOL) != TradeSymbol) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != InpMagic) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != (long)InpMagic) continue;
 
       MqlTradeRequest req = {}; MqlTradeResult res = {};
       req.action   = TRADE_ACTION_DEAL;
@@ -299,7 +311,9 @@ void CloseAllOwnPositions(string reason) {
       req.deviation = InpSlippage;
       req.comment  = "N30 " + reason;
       uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
-      req.type_filling = (fill & SYMBOL_FILLING_FOK) ? ORDER_FILLING_FOK : ORDER_FILLING_IOC;
+      if(fill & SYMBOL_FILLING_FOK) req.type_filling = ORDER_FILLING_FOK;
+      else if(fill & SYMBOL_FILLING_IOC) req.type_filling = ORDER_FILLING_IOC;
+      else req.type_filling = ORDER_FILLING_RETURN;
 
       if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
          Print("Close position failed (", reason, "): ticket=", ticket, " retcode=", res.retcode);
@@ -445,6 +459,17 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore, doubl
    lot = NormalizeLot(lot);
    int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
 
+   // Check sufficient margin before opening trade
+   double marginRequired;
+   if(!OrderCalcMargin(type, TradeSymbol, lot, p, marginRequired)) {
+      Print("Failed to calculate margin, skipping trade");
+      return;
+   }
+   if(marginRequired > AccountInfoDouble(ACCOUNT_MARGIN_FREE)) {
+      Print("Insufficient margin: required=", marginRequired, " free=", AccountInfoDouble(ACCOUNT_MARGIN_FREE));
+      return;
+   }
+
    string dir = (type == ORDER_TYPE_BUY) ? "B" : "S";
    string comment = TruncateComment("N30 " + dir
                    + "|Z" + DoubleToString(zScore, 2)
@@ -462,7 +487,9 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore, doubl
    req.deviation    = InpSlippage;
    req.comment      = comment;
    uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
-   req.type_filling = (fill & SYMBOL_FILLING_FOK) ? ORDER_FILLING_FOK : ORDER_FILLING_IOC;
+   if(fill & SYMBOL_FILLING_FOK) req.type_filling = ORDER_FILLING_FOK;
+   else if(fill & SYMBOL_FILLING_IOC) req.type_filling = ORDER_FILLING_IOC;
+   else req.type_filling = ORDER_FILLING_RETURN;
 
    if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
       Print("Entry failed: retcode=", res.retcode, " comment=", res.comment);
