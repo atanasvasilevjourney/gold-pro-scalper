@@ -427,15 +427,29 @@ void OnTick() {
       }
    }
    
+   // --- Volatility Ratio & Dynamic Z-Score Threshold ---
+   double atrBuf100[100];
+   double avgATR100 = 0;
+   if(CopyBuffer(handleATR, 0, 0, 100, atrBuf100) >= 100) {
+      double atrSum = 0;
+      for(int k = 0; k < 100; k++) atrSum += atrBuf100[k];
+      avgATR100 = atrSum / 100.0;
+   } else {
+      avgATR100 = atr[0]; // fallback: ratio = 1.0 (no adjustment)
+   }
+   double volRatio  = (avgATR100 > 0) ? (atr[0] / avgATR100) : 1.0;
+   double dynamicZ  = InpEntryZ + (volRatio > 1.5 ? 0.5 : 0.0);
+
    bool nearNews        = IsNearNews();
    bool lossLimitHit    = IsDailyLossLimitHit();
    bool redNewsImminent = IsRedNewsImminent();
    bool weekendRisk     = IsWeekendRisk();
 
-   // --- Spread Check ---
-   double atrPts = atr[0] / point;
-   bool spreadOk = (currentSpread <= InpMaxSpreadPts) && 
-                   (currentSpread <= 1.0 * atrPts) &&
+   // --- Spread Check (ATR-relative) ---
+   double atrPts          = atr[0] / point;
+   double maxAllowedSpread = atrPts * 0.12;  // block entry when cost > 12% of expected M1 move
+   bool spreadOk = (currentSpread <= InpMaxSpreadPts) &&
+                   (currentSpread <= maxAllowedSpread) &&
                    (currentSpread <= spreadMA * 1.5);
 
    // --- Pre-compute filter states ---
@@ -506,10 +520,10 @@ void OnTick() {
       if(CountOwnPositions() < InpMaxPositions) {
          bool baseFilters = (inWindow && spreadOk && !nearNews);
          if(baseFilters) {
-            if(zScore < -InpEntryZ && IsAlignedWithH1Trend(true)) {
+            if(zScore < -dynamicZ && IsAlignedWithH1Trend(true)) {
                ExecuteTrade(ORDER_TYPE_BUY, ask, atr[0], zScore);
             }
-            else if(zScore > InpEntryZ && IsAlignedWithH1Trend(false)) {
+            else if(zScore > dynamicZ && IsAlignedWithH1Trend(false)) {
                ExecuteTrade(ORDER_TYPE_SELL, bid, atr[0], zScore);
             }
          }
@@ -517,9 +531,14 @@ void OnTick() {
    }
 
    Comment("--- N30 GOLD REVERSION (SIMPLE) ---\n",
-           "Z-Score(1): ", DoubleToString(zScore, 2), "\n",
+           "Z-Score(1): ", DoubleToString(zScore, 2),
+           "  |  Z-Target: ", DoubleToString(dynamicZ, 2), "\n",
+           "Volatility Ratio: ", DoubleToString(volRatio, 2),
+           (volRatio > 1.5 ? "  [HIGH - Z raised +0.5]" : "  [normal]"), "\n",
            "H1 Trend: ", h1Status, "\n",
-           "Spread: ", DoubleToString(currentSpread, 1), " (Avg20: ", DoubleToString(spreadMA, 1), ") ", (spreadOk ? "OK" : "BLOCKED"), "\n",
+           "Spread: ", DoubleToString(currentSpread, 1),
+           " / MaxAllowed: ", DoubleToString(maxAllowedSpread, 1),
+           " (Avg20: ", DoubleToString(spreadMA, 1), ") ", (spreadOk ? "OK" : "BLOCKED"), "\n",
            "News: ", (nearNews ? "BLOCKED" : "clear"),
            (redNewsImminent ? " [CLOSING NOW]" : ""), "\n",
            "Trade Duration: ", tradeDurStr);
