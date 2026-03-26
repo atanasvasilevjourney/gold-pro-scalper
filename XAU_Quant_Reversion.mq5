@@ -37,7 +37,7 @@ input int      InpMaxPositions = 1;       // Max open positions allowed
 //--- Inputs: News Filter (red folder / CALENDAR_IMPORTANCE_HIGH only)
 input bool     InpUseNewsFilter      = true;  // Enable news time filter
 input int      InpNewsMinsBefore     = 60;    // Minutes to pause BEFORE red-folder news
-input int      InpNewsMinsAfter      = 60;    // Minutes to pause AFTER red-folder news
+input int      InpNewsMinsAfter      = 120;   // Minutes to pause AFTER red-folder news (washout buffer)
 input bool     InpCloseBeforeNews    = true;  // Close open trades before red-folder news
 
 //--- Inputs: Daily Loss Limit
@@ -46,6 +46,9 @@ input double   InpMaxDailyLossPct    = 20.0;  // Max daily loss % of balance (st
 
 //--- Global Handles & State
 int handleMA, handleSD, handleATR, handleMA_H1;
+double spreadBuffer[20];
+int    spreadIdx = 0;
+bool   spreadBufferFull = false;
 
 //--- News schedule: red folder (CALENDAR_IMPORTANCE_HIGH) only
 #define MAX_NEWS 40
@@ -58,8 +61,9 @@ double dailyStartBalance = 0;
 int    dailyStartDay = -1;
 bool   dailyLossHit = false;
 
-//--- New-bar tracking for trailing
+//--- New-bar tracking
 datetime lastTrailBar = 0;
+datetime lastBarTime = 0;
 
 //+------------------------------------------------------------------+
 int OnInit() {
@@ -72,6 +76,11 @@ int OnInit() {
          Print("Neither GOLD nor XAUUSD found. Please set TradeSymbol manually.");
          return(INIT_FAILED);
       }
+   }
+   // Ensure symbol is in Market Watch so indicator handles and quotes work
+   if(!SymbolSelect(TradeSymbol, true)) {
+      Print("Failed to add ", TradeSymbol, " to Market Watch");
+      return(INIT_FAILED);
    }
 
    handleMA    = iMA(TradeSymbol, _Period, InpMAPeriod, 0, MODE_SMA, PRICE_CLOSE);
@@ -99,6 +108,11 @@ int OnInit() {
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt);
    dailyStartDay = dt.day_of_year;
    dailyLossHit = false;
+
+   // Initialize bar trackers to current time to avoid immediate action on stale bars
+   datetime currentBarTime = iTime(TradeSymbol, _Period, 0);
+   lastBarTime = currentBarTime;
+   lastTrailBar = currentBarTime;
 
    return(INIT_SUCCEEDED);
 }
@@ -271,9 +285,14 @@ double NormalizeLot(double lot) {
 
    lot = MathMax(minLot, lot);
    lot = MathMin(maxLot, lot);
+   // Strictly follow volume step using MathFloor to avoid 'Invalid Volume' errors
    lot = MathFloor(lot / stepLot) * stepLot;
-   lot = NormalizeDouble(lot, 2);
-   return lot;
+
+   // Derive decimal places from step size without fragile float == comparison
+   int digits = (int)MathRound(-MathLog10(stepLot + 1e-10));
+   if(digits < 0) digits = 0;
+
+   return NormalizeDouble(lot, digits);
 }
 
 //+------------------------------------------------------------------+
@@ -291,8 +310,11 @@ void CloseAllOwnPositions(string reason) {
       req.volume   = PositionGetDouble(POSITION_VOLUME);
       long posType = PositionGetInteger(POSITION_TYPE);
       req.type     = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
-      req.price    = (req.type == ORDER_TYPE_SELL) ? SymbolInfoDouble(TradeSymbol, SYMBOL_BID)
+      
+      double price = (req.type == ORDER_TYPE_SELL) ? SymbolInfoDouble(TradeSymbol, SYMBOL_BID)
                                                    : SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
+                                                   
+      req.price    = NormalizeDouble(price, _Digits);
       req.deviation = InpSlippage;
       req.comment  = "N30 " + reason;
       uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
@@ -339,6 +361,7 @@ void OnTick() {
    CheckDailyReset();
 
    double ma[1], sd[1], atr[1];
+   // We always need current data for spread and ATR (trailing)
    if(CopyBuffer(handleMA,0,0,1,ma)<1 || CopyBuffer(handleSD,0,0,1,sd)<1 ||
       CopyBuffer(handleATR,0,0,1,atr)<1) return;
 
@@ -347,20 +370,48 @@ void OnTick() {
    double ask   = SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
    double point = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
 
-   if(sd[0] <= 0.0) return;
+   // --- Spread Calculation & Buffer Update ---
+   double currentSpread = (ask - bid) / point;
+   spreadBuffer[spreadIdx] = currentSpread;
+   spreadIdx++;
+   if(spreadIdx >= 20) {
+      spreadIdx = 0;
+      spreadBufferFull = true;
+   }
+   
+   double spreadSum = 0;
+   int count = spreadBufferFull ? 20 : spreadIdx;
+   for(int i = 0; i < count; i++) spreadSum += spreadBuffer[i];
+   double spreadMA = (count > 0) ? (spreadSum / count) : currentSpread;
 
-   double zScore        = (bid - ma[0]) / sd[0];
+   // --- NEW BAR DETECTION ---
+   datetime currentTime = iTime(TradeSymbol, _Period, 0);
+   bool isNewBar = (currentTime != lastBarTime);
+   if(isNewBar) lastBarTime = currentTime; // STRICT OHLC: Update immediately so entry only runs once per bar
+
+   // --- Z-Score Calculation (Shift 1 for OHLC alignment) ---
+   // We only update Z-Score once per bar to match OHLC backtest signals
+   static double zScore = 0;
+   if(isNewBar) {
+      double ma1[1], sd1[1];
+      if(CopyBuffer(handleMA,0,1,1,ma1)>=1 && CopyBuffer(handleSD,0,1,1,sd1)>=1) {
+         double close1 = iClose(TradeSymbol, _Period, 1);
+         zScore = (sd1[0] > 0.0) ? (close1 - ma1[0]) / sd1[0] : 0.0;
+      }
+   }
+   
    bool nearNews        = IsNearNews();
    bool lossLimitHit    = IsDailyLossLimitHit();
    bool redNewsImminent = IsRedNewsImminent();
    bool weekendRisk     = IsWeekendRisk();
 
-   // --- Spread Check: block if spread exceeds either the fixed cap OR 100% of ATR (in points) ---
-   double spreadPts = (ask - bid) / point;
-   double atrPts    = atr[0] / point;
-   bool spreadOk    = (spreadPts <= InpMaxSpreadPts) && (spreadPts <= 1.0 * atrPts);
+   // --- Spread Check ---
+   double atrPts = atr[0] / point;
+   bool spreadOk = (currentSpread <= InpMaxSpreadPts) && 
+                   (currentSpread <= 1.0 * atrPts) &&
+                   (currentSpread <= spreadMA * 1.5);
 
-   // --- Pre-compute filter states for Comment display ---
+   // --- Pre-compute filter states ---
    bool inWindow  = (dt.hour >= InpStartHour && dt.hour < InpEndHour);
 
    string h1Status = "OFF";
@@ -393,9 +444,11 @@ void OnTick() {
       CloseAllOwnPositions("(red folder) high-impact news imminent");
    }
 
-   // --- POSITION MANAGEMENT ---
+   // --- POSITION MANAGEMENT (Every Tick) ---
    string tradeDurStr = "None";
-   if(SelectOwnPosition()) {
+   bool positionOpen = SelectOwnPosition();
+   
+   if(positionOpen) {
       long openTime = PositionGetInteger(POSITION_TIME);
       long durationSec = TimeCurrent() - openTime;
       int durMins = (int)(durationSec / 60);
@@ -409,36 +462,37 @@ void OnTick() {
          // Z-Score TP: close when price reverts to mean
          long posType = PositionGetInteger(POSITION_TYPE);
          bool zRevert = false;
-         if(posType == POSITION_TYPE_BUY && zScore >= -InpExitZ) zRevert = true;   // bought low, Z back near 0
-         if(posType == POSITION_TYPE_SELL && zScore <= InpExitZ) zRevert = true;    // sold high, Z back near 0
+         if(posType == POSITION_TYPE_BUY && zScore >= -InpExitZ) zRevert = true;
+         if(posType == POSITION_TYPE_SELL && zScore <= InpExitZ) zRevert = true;
 
          if(zRevert) {
             CloseAllOwnPositions("Z-Score TP (Z=" + DoubleToString(zScore, 2) + ")");
          } else {
             // Trail on new bar only
-            datetime curBar = iTime(TradeSymbol, _Period, 0);
-            if(curBar != lastTrailBar) {
-               lastTrailBar = curBar;
+            if(currentTime != lastTrailBar) {
+               lastTrailBar = currentTime;
                HandleTrailingStop(atr[0]);
             }
          }
       }
-   } else {
-      // --- ENTRY LOGIC ---
-      if(CountOwnPositions() >= InpMaxPositions) return;  // max positions limit
-
-      bool baseFilters = (inWindow && spreadOk && !nearNews);
-      if(baseFilters) {
-         if(zScore < -InpEntryZ && IsAlignedWithH1Trend(true))
-            ExecuteTrade(ORDER_TYPE_BUY, ask, atr[0], zScore);
-         else if(zScore > InpEntryZ && IsAlignedWithH1Trend(false))
-            ExecuteTrade(ORDER_TYPE_SELL, bid, atr[0], zScore);
+   } else if(isNewBar) { // --- ENTRY LOGIC (Strictly New Bar First Tick) ---
+      if(CountOwnPositions() < InpMaxPositions) {
+         bool baseFilters = (inWindow && spreadOk && !nearNews);
+         if(baseFilters) {
+            if(zScore < -InpEntryZ && IsAlignedWithH1Trend(true)) {
+               ExecuteTrade(ORDER_TYPE_BUY, ask, atr[0], zScore);
+            }
+            else if(zScore > InpEntryZ && IsAlignedWithH1Trend(false)) {
+               ExecuteTrade(ORDER_TYPE_SELL, bid, atr[0], zScore);
+            }
+         }
       }
    }
 
    Comment("--- N30 GOLD REVERSION (SIMPLE) ---\n",
-           "Z-Score: ", DoubleToString(zScore, 2), "\n",
+           "Z-Score(1): ", DoubleToString(zScore, 2), "\n",
            "H1 Trend: ", h1Status, "\n",
+           "Spread: ", DoubleToString(currentSpread, 1), " (Avg20: ", DoubleToString(spreadMA, 1), ") ", (spreadOk ? "OK" : "BLOCKED"), "\n",
            "News: ", (nearNews ? "BLOCKED" : "clear"),
            (redNewsImminent ? " [CLOSING NOW]" : ""), "\n",
            "Trade Duration: ", tradeDurStr);
@@ -446,19 +500,27 @@ void OnTick() {
 
 //+------------------------------------------------------------------+
 void HandleTrailingStop(double atrVal) {
+   if(!SelectOwnPosition()) return;   // Re-select defensively in case context drifted
    double currentSL = PositionGetDouble(POSITION_SL);
    double currentTP = PositionGetDouble(POSITION_TP);
    double bid = SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
    long type = PositionGetInteger(POSITION_TYPE);
    double trailDist = atrVal * InpTrailingATR;
-   int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
+   double point = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
+   int stopLevel = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_TRADE_STOPS_LEVEL);
 
    if(type == POSITION_TYPE_BUY) {
-      double newSL = NormalizeDouble(bid - trailDist, digits);
+      double newSL = NormalizeDouble(bid - trailDist, _Digits);
+      // Ensure SYMBOL_TRADE_STOPS_LEVEL check
+      if(bid - newSL < stopLevel * point) newSL = NormalizeDouble(bid - stopLevel * point, _Digits);
+      
       if(newSL > currentSL + (atrVal * 0.2)) ModifySL(newSL, currentTP);
    } else {
-      double newSL = NormalizeDouble(ask + trailDist, digits);
+      double newSL = NormalizeDouble(ask + trailDist, _Digits);
+      // Ensure SYMBOL_TRADE_STOPS_LEVEL check
+      if(newSL - ask < stopLevel * point) newSL = NormalizeDouble(ask + stopLevel * point, _Digits);
+      
       if(newSL < currentSL - (atrVal * 0.2) || currentSL == 0) ModifySL(newSL, currentTP);
    }
 }
@@ -469,8 +531,8 @@ void ModifySL(double nSL, double currentTP) {
    r.action   = TRADE_ACTION_SLTP;
    r.position = (ulong)PositionGetInteger(POSITION_TICKET);
    r.symbol   = TradeSymbol;
-   r.sl       = nSL;
-   r.tp       = currentTP;
+   r.sl       = NormalizeDouble(nSL, _Digits);
+   r.tp       = NormalizeDouble(currentTP, _Digits);
    if(!OrderSend(r, rs) || rs.retcode != TRADE_RETCODE_DONE) {
       Print("TrailSL modify failed: retcode=", rs.retcode);
    }
@@ -480,8 +542,15 @@ void ModifySL(double nSL, double currentTP) {
 void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore) {
    MqlTradeRequest req = {}; MqlTradeResult res = {};
    double point = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
+   int stopLevel = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_TRADE_STOPS_LEVEL);
+   
    double slD = InpSLPoints * point;
    double tpD = InpHardTPPoints * point;
+   
+   // Apply SYMBOL_TRADE_STOPS_LEVEL safety
+   if(slD < stopLevel * point) slD = stopLevel * point + 5 * point;
+   if(tpD < stopLevel * point) tpD = stopLevel * point + 5 * point;
+
    double sl = (type == ORDER_TYPE_BUY) ? (p - slD) : (p + slD);
    double tp = (type == ORDER_TYPE_BUY) ? (p + tpD) : (p - tpD);
    double riskPct = GetRiskPct();
@@ -496,7 +565,12 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore) {
 
    double lot = risk / (slD * (1.0 / tickS) * tickV);
    lot = NormalizeLot(lot);
-   int digits = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_DIGITS);
+
+   double minLot = SymbolInfoDouble(TradeSymbol, SYMBOL_VOLUME_MIN);
+   if(lot < minLot) {
+      Print("Calculated lot (", DoubleToString(lot, 3), ") below broker minimum (", DoubleToString(minLot, 3), "). Insufficient balance for this risk level.");
+      return;
+   }
 
    // Check sufficient margin before opening trade
    double marginRequired;
@@ -518,10 +592,10 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore) {
    req.symbol       = TradeSymbol;
    req.volume       = lot;
    req.type         = type;
-   req.price        = p;
+   req.price        = NormalizeDouble(p, _Digits);
    req.magic        = InpMagic;
-   req.sl           = NormalizeDouble(sl, digits);
-   req.tp           = NormalizeDouble(tp, digits);
+   req.sl           = NormalizeDouble(sl, _Digits);
+   req.tp           = NormalizeDouble(tp, _Digits);
    req.deviation    = InpSlippage;
    req.comment      = comment;
    uint fill = (uint)SymbolInfoInteger(TradeSymbol, SYMBOL_FILLING_MODE);
@@ -532,7 +606,7 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore) {
    if(!OrderSend(req, res) || res.retcode != TRADE_RETCODE_DONE) {
       Print("Entry failed: retcode=", res.retcode, " comment=", res.comment);
    } else {
-      Print("Trade opened: ", EnumToString(type), " ", lot, " lots, SL=", NormalizeDouble(sl, digits), " TP(hard)=", NormalizeDouble(tp, digits), " exitZ=", InpExitZ);
+      Print("Trade opened: ", EnumToString(type), " ", lot, " lots, SL=", NormalizeDouble(sl, _Digits), " TP(hard)=", NormalizeDouble(tp, _Digits), " exitZ=", InpExitZ);
    }
 }
 //+------------------------------------------------------------------+
