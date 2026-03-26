@@ -509,6 +509,8 @@ void OnTick() {
          if(zRevert) {
             CloseAllOwnPositions("Z-Score TP (Z=" + DoubleToString(zScore, 2) + ")");
          } else {
+            // Breakeven: every tick — lock in no-loss once 1.5*ATR in profit
+            CheckBreakeven(atr[0]);
             // Trail on new bar only
             if(currentTime != lastTrailBar) {
                lastTrailBar = currentTime;
@@ -545,14 +547,61 @@ void OnTick() {
 }
 
 //+------------------------------------------------------------------+
+//  CheckBreakeven — move SL to entry + 10 pts once 1.5*ATR in profit
+//+------------------------------------------------------------------+
+void CheckBreakeven(double atrVal) {
+   if(glTicket == 0 || !PositionSelectByTicket(glTicket)) return;
+
+   double entryPrice  = PositionGetDouble(POSITION_PRICE_OPEN);
+   double currentSL   = PositionGetDouble(POSITION_SL);
+   double currentTP   = PositionGetDouble(POSITION_TP);
+   long   posType     = PositionGetInteger(POSITION_TYPE);
+   double bid         = SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
+   double ask         = SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
+   double point       = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
+   int    stopLevel   = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double bePts       = 10.0 * point;
+   double triggerDist = 1.5 * atrVal;
+
+   if(posType == POSITION_TYPE_BUY) {
+      if(bid < entryPrice + triggerDist) return;   // not 1.5*ATR in profit yet
+      double beSL = NormalizeDouble(entryPrice + bePts, _Digits);
+      if(beSL <= currentSL) return;                // already at or beyond breakeven
+      if(bid - beSL < stopLevel * point)
+         beSL = NormalizeDouble(bid - stopLevel * point, _Digits);
+      if(beSL > currentSL) {
+         Print("Breakeven triggered (BUY): SL -> ", DoubleToString(beSL, _Digits));
+         ModifySL(beSL, currentTP);
+      }
+   } else {
+      if(ask > entryPrice - triggerDist) return;   // not 1.5*ATR in profit yet
+      double beSL = NormalizeDouble(entryPrice - bePts, _Digits);
+      if(currentSL != 0 && beSL >= currentSL) return; // already at or beyond breakeven
+      if(beSL - ask < stopLevel * point)
+         beSL = NormalizeDouble(ask + stopLevel * point, _Digits);
+      if(currentSL == 0 || beSL < currentSL) {
+         Print("Breakeven triggered (SELL): SL -> ", DoubleToString(beSL, _Digits));
+         ModifySL(beSL, currentTP);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 void HandleTrailingStop(double atrVal) {
    if(glTicket == 0 || !PositionSelectByTicket(glTicket)) return;
+
+   // Time-decay: tighten trail by 50% after 50% of InpMaxHoldMinutes has elapsed
+   long openTimeSec  = PositionGetInteger(POSITION_TIME);
+   long durationSec  = TimeCurrent() - openTimeSec;
+   long halfMaxSec   = (long)InpMaxHoldMinutes * 30;   // 50% of max hold in seconds
+   double trailMult  = (durationSec > halfMaxSec) ? InpTrailingATR * 0.5 : InpTrailingATR;
+
    double currentSL = PositionGetDouble(POSITION_SL);
    double currentTP = PositionGetDouble(POSITION_TP);
    double bid = SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
    long type = PositionGetInteger(POSITION_TYPE);
-   double trailDist = atrVal * InpTrailingATR;
+   double trailDist = atrVal * trailMult;
    double point = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
    int stopLevel = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_TRADE_STOPS_LEVEL);
 
