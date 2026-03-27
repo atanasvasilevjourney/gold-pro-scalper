@@ -18,6 +18,7 @@ input double   InpSLPoints    = 800;      // Fixed SL in points (survives gold s
 input double   InpHardTPPoints = 1500;    // Hard TP in points (server-side safety net, wide)
 input double   InpExitZ       = 0.5;      // Z-Score exit threshold (close when Z returns near 0)
 input double   InpTrailingATR = 2.0;      // ATR multiplier for trailing
+input double   InpMinProfitBuffer = 50.0; // Minimum profit buffer in points before breakeven triggers
 input int      InpStartHour   = 10;       // Trade window start hour
 input int      InpEndHour     = 20;       // Trade window end hour (exclusive)
 input int      InpFridayCloseHour = 20;   // Friday hour to close and stop
@@ -88,6 +89,19 @@ bool   dailyLossHit = false;
 datetime lastTrailBar = 0;
 datetime lastBarTime = 0;
 
+//--- Entry confirmation gate: filter out flash spikes
+//    ExecuteTrade fires only after signal persists 3+ consecutive ticks OR 2+ seconds
+int      glEntryConfirmTicks = 0;   // ticks that have confirmed the current signal
+datetime glEntryConfirmStart = 0;   // wall-clock time of the first confirming tick
+int      glEntryConfirmDir   = 0;   // 1 = buy signal, -1 = sell signal, 0 = no signal
+
+//--- Price Velocity filter: block entry when price moves > 25% of M1 ATR within 10 ticks
+#define VELOCITY_TICKS 10
+double   glVelBuf[VELOCITY_TICKS]; // circular buffer of last 10 bid prices
+int      glVelIdx        = 0;      // write index
+bool     glVelBufFull    = false;  // true once buffer has been filled once
+datetime glVelBlockUntil = 0;      // entry blocked until this server time
+
 //+------------------------------------------------------------------+
 int OnInit() {
    // Initialize and validate symbol
@@ -137,6 +151,17 @@ int OnInit() {
    datetime currentBarTime = iTime(TradeSymbol, _Period, 0);
    lastBarTime = currentBarTime;
    lastTrailBar = currentBarTime;
+
+   // Reset entry confirmation gate on (re)init
+   glEntryConfirmDir   = 0;
+   glEntryConfirmTicks = 0;
+   glEntryConfirmStart = 0;
+
+   // Reset price velocity filter on (re)init
+   ArrayInitialize(glVelBuf, 0.0);
+   glVelIdx        = 0;
+   glVelBufFull    = false;
+   glVelBlockUntil = 0;
 
    return(INIT_SUCCEEDED);
 }
@@ -411,6 +436,19 @@ void OnTick() {
    for(int i = 0; i < count; i++) spreadSum += spreadBuffer[i];
    double spreadMA = (count > 0) ? (spreadSum / count) : currentSpread;
 
+   // --- PRICE VELOCITY FILTER: update 10-tick bid buffer ---
+   glVelBuf[glVelIdx] = bid;
+   glVelIdx++;
+   if(glVelIdx >= VELOCITY_TICKS) { glVelIdx = 0; glVelBufFull = true; }
+   if(glVelBufFull) {
+      // oldest value is at current write position (about to be overwritten next tick)
+      double oldest  = glVelBuf[glVelIdx % VELOCITY_TICKS];
+      double newest  = glVelBuf[(glVelIdx + VELOCITY_TICKS - 1) % VELOCITY_TICKS];
+      double velMove = MathAbs(newest - oldest);
+      if(velMove > 0.25 * atr[0])
+         glVelBlockUntil = TimeCurrent() + 3;  // block entries for 3 seconds
+   }
+
    // --- NEW BAR DETECTION ---
    datetime currentTime = iTime(TradeSymbol, _Period, 0);
    bool isNewBar = (currentTime != lastBarTime);
@@ -439,18 +477,21 @@ void OnTick() {
    }
    double volRatio  = (avgATR100 > 0) ? (atr[0] / avgATR100) : 1.0;
    double dynamicZ  = InpEntryZ + (volRatio > 1.5 ? 0.5 : 0.0);
+   double softZ     = InpEntryZ * 0.75;
+   // Stable market (volRatio 0.7–1.1): lower soft threshold captures more standard reversions
+   // Elevated volatility (volRatio > 1.2): demand full dynamicZ to avoid noise spikes
+   double entryZ    = (volRatio >= 0.7 && volRatio <= 1.1) ? softZ : dynamicZ;
 
    bool nearNews        = IsNearNews();
    bool lossLimitHit    = IsDailyLossLimitHit();
    bool redNewsImminent = IsRedNewsImminent();
    bool weekendRisk     = IsWeekendRisk();
 
-   // --- Spread Check (ATR-relative) ---
-   double atrPts          = atr[0] / point;
-   double maxAllowedSpread = atrPts * 0.12;  // block entry when cost > 12% of expected M1 move
-   bool spreadOk = (currentSpread <= InpMaxSpreadPts) &&
-                   (currentSpread <= maxAllowedSpread) &&
-                   (currentSpread <= spreadMA * 1.5);
+   // --- Spread Check (ATR-relative only) ---
+   double atrPts           = atr[0] / point;
+   double maxAllowedSpread = atrPts * 0.12;  // block entry when spread > 12% of current M1 ATR
+   bool spreadOk = (currentSpread <= maxAllowedSpread) &&     // ATR-relative gate
+                   (currentSpread <= spreadMA * 1.5);         // liquidity-gap guard: no entry if spread > 1.5x 20-tick average
 
    // --- Pre-compute filter states ---
    bool inWindow  = (dt.hour >= InpStartHour && dt.hour < InpEndHour);
@@ -494,20 +535,23 @@ void OnTick() {
       long durationSec = TimeCurrent() - openTime;
       int durMins = (int)(durationSec / 60);
       int durSecs = (int)(durationSec % 60);
-      tradeDurStr = IntegerToString(durMins) + "m " + IntegerToString(durSecs) + "s";
+      // Gravity Exit: exit Z decays 0.1 per every 5 mins open, floors at 0.0 after 15 mins
+      double gravityExitZ = (durMins >= 15) ? 0.0 : MathMax(0.0, InpExitZ - (durMins / 5) * 0.1);
+      tradeDurStr = IntegerToString(durMins) + "m " + IntegerToString(durSecs) + "s"
+                  + " [ExitZ=" + DoubleToString(gravityExitZ, 2) + "]";
 
       // Time-Based Exit
       if(durMins >= InpMaxHoldMinutes) {
          CloseAllOwnPositions("Time Exit (" + tradeDurStr + ")");
       } else {
-         // Z-Score TP: close when price reverts to mean
+         // Z-Score TP: Gravity Exit — exit threshold decays toward 0 as trade ages
          long posType = PositionGetInteger(POSITION_TYPE);
          bool zRevert = false;
-         if(posType == POSITION_TYPE_BUY && zScore >= -InpExitZ) zRevert = true;
-         if(posType == POSITION_TYPE_SELL && zScore <= InpExitZ) zRevert = true;
+         if(posType == POSITION_TYPE_BUY && zScore >= -gravityExitZ) zRevert = true;
+         if(posType == POSITION_TYPE_SELL && zScore <= gravityExitZ) zRevert = true;
 
          if(zRevert) {
-            CloseAllOwnPositions("Z-Score TP (Z=" + DoubleToString(zScore, 2) + ")");
+            CloseAllOwnPositions("Gravity Exit (Z=" + DoubleToString(zScore, 2) + " tgt=" + DoubleToString(gravityExitZ, 2) + ")");
          } else {
             // Breakeven: every tick — lock in no-loss once 1.5*ATR in profit
             CheckBreakeven(atr[0]);
@@ -518,36 +562,66 @@ void OnTick() {
             }
          }
       }
-   } else if(isNewBar) { // --- ENTRY LOGIC (Strictly New Bar First Tick) ---
+   } else { // --- ENTRY LOGIC (every tick, gated by flash-spike filter) ---
       if(CountOwnPositions() < InpMaxPositions) {
          bool baseFilters = (inWindow && spreadOk && !nearNews);
+
+         // Determine current signal direction (0 = no signal)
+         int signalDir = 0;
          if(baseFilters) {
-            if(zScore < -dynamicZ && IsAlignedWithH1Trend(true)) {
-               ExecuteTrade(ORDER_TYPE_BUY, ask, atr[0], zScore);
-            }
-            else if(zScore > dynamicZ && IsAlignedWithH1Trend(false)) {
+            if(zScore < -entryZ && IsAlignedWithH1Trend(true))       signalDir =  1;
+            else if(zScore > entryZ && IsAlignedWithH1Trend(false))  signalDir = -1;
+         }
+
+         // --- Confirmation gate: accumulate or reset ---
+         if(signalDir != 0 && signalDir == glEntryConfirmDir) {
+            glEntryConfirmTicks++;                            // same direction: count up
+         } else if(signalDir != 0) {
+            glEntryConfirmDir   = signalDir;                 // new direction: start fresh
+            glEntryConfirmTicks = 1;
+            glEntryConfirmStart = TimeCurrent();
+         } else {
+            glEntryConfirmDir   = 0;                         // signal gone: reset
+            glEntryConfirmTicks = 0;
+            glEntryConfirmStart = 0;
+         }
+
+         // Fire only after 3+ consecutive ticks OR 2+ seconds of sustained signal,
+         // and only when the price-velocity block has expired (no knife-catching)
+         bool ticksOk = (glEntryConfirmTicks >= 3);
+         bool timeOk  = (glEntryConfirmStart > 0 && (TimeCurrent() - glEntryConfirmStart) >= 2);
+         bool velOk   = (TimeCurrent() >= glVelBlockUntil);
+         if(glEntryConfirmDir != 0 && (ticksOk || timeOk) && velOk) {
+            if(glEntryConfirmDir == 1)
+               ExecuteTrade(ORDER_TYPE_BUY,  ask, atr[0], zScore);
+            else
                ExecuteTrade(ORDER_TYPE_SELL, bid, atr[0], zScore);
-            }
+            // Reset gate after firing to prevent double-entry
+            glEntryConfirmDir   = 0;
+            glEntryConfirmTicks = 0;
+            glEntryConfirmStart = 0;
          }
       }
    }
 
    Comment("--- N30 GOLD REVERSION (SIMPLE) ---\n",
            "Z-Score(1): ", DoubleToString(zScore, 2),
-           "  |  Z-Target: ", DoubleToString(dynamicZ, 2), "\n",
+           "  |  Z-Target: ", DoubleToString(entryZ, 2),
+           " (", (volRatio >= 0.7 && volRatio <= 1.1 ? "SOFT" : "FULL"), ")\n",
            "Volatility Ratio: ", DoubleToString(volRatio, 2),
-           (volRatio > 1.5 ? "  [HIGH - Z raised +0.5]" : "  [normal]"), "\n",
+           (volRatio > 1.5 ? "  [HIGH - Z raised +0.5]" : (volRatio >= 0.7 && volRatio <= 1.1 ? "  [stable - soft threshold]" : "  [normal]")), "\n",
            "H1 Trend: ", h1Status, "\n",
            "Spread: ", DoubleToString(currentSpread, 1),
            " / MaxAllowed: ", DoubleToString(maxAllowedSpread, 1),
            " (Avg20: ", DoubleToString(spreadMA, 1), ") ", (spreadOk ? "OK" : "BLOCKED"), "\n",
            "News: ", (nearNews ? "BLOCKED" : "clear"),
            (redNewsImminent ? " [CLOSING NOW]" : ""), "\n",
+           "Velocity: ", (TimeCurrent() < glVelBlockUntil ? "BLOCKED (" + IntegerToString((int)(glVelBlockUntil - TimeCurrent())) + "s)" : "ok"), "\n",
            "Trade Duration: ", tradeDurStr);
 }
 
 //+------------------------------------------------------------------+
-//  CheckBreakeven — move SL to entry + 10 pts once 1.5*ATR in profit
+//  CheckBreakeven — move SL to entry + 10 pts once (1.5*ATR + Buffer) in profit
 //+------------------------------------------------------------------+
 void CheckBreakeven(double atrVal) {
    if(glTicket == 0 || !PositionSelectByTicket(glTicket)) return;
@@ -561,10 +635,10 @@ void CheckBreakeven(double atrVal) {
    double point       = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
    int    stopLevel   = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_TRADE_STOPS_LEVEL);
    double bePts       = 10.0 * point;
-   double triggerDist = 1.5 * atrVal;
+   double triggerDist = 1.5 * atrVal + InpMinProfitBuffer * point;   // ATR threshold + buffer
 
    if(posType == POSITION_TYPE_BUY) {
-      if(bid < entryPrice + triggerDist) return;   // not 1.5*ATR in profit yet
+      if(bid < entryPrice + triggerDist) return;   // not (1.5*ATR + buffer) in profit yet
       double beSL = NormalizeDouble(entryPrice + bePts, _Digits);
       if(beSL <= currentSL) return;                // already at or beyond breakeven
       if(bid - beSL < stopLevel * point)
@@ -574,7 +648,7 @@ void CheckBreakeven(double atrVal) {
          ModifySL(beSL, currentTP);
       }
    } else {
-      if(ask > entryPrice - triggerDist) return;   // not 1.5*ATR in profit yet
+      if(ask > entryPrice - triggerDist) return;   // not (1.5*ATR + buffer) in profit yet
       double beSL = NormalizeDouble(entryPrice - bePts, _Digits);
       if(currentSL != 0 && beSL >= currentSL) return; // already at or beyond breakeven
       if(beSL - ask < stopLevel * point)
@@ -605,18 +679,16 @@ void HandleTrailingStop(double atrVal) {
    double point = SymbolInfoDouble(TradeSymbol, SYMBOL_POINT);
    int stopLevel = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_TRADE_STOPS_LEVEL);
 
+   double minMove = atrVal * 0.3;   // only modify if new SL is at least 0.3*ATR from current
+
    if(type == POSITION_TYPE_BUY) {
       double newSL = NormalizeDouble(bid - trailDist, _Digits);
-      // Ensure SYMBOL_TRADE_STOPS_LEVEL check
       if(bid - newSL < stopLevel * point) newSL = NormalizeDouble(bid - stopLevel * point, _Digits);
-      
-      if(newSL > currentSL + (atrVal * 0.2)) ModifySL(newSL, currentTP);
+      if(newSL > currentSL + minMove) ModifySL(newSL, currentTP);
    } else {
       double newSL = NormalizeDouble(ask + trailDist, _Digits);
-      // Ensure SYMBOL_TRADE_STOPS_LEVEL check
       if(newSL - ask < stopLevel * point) newSL = NormalizeDouble(ask + stopLevel * point, _Digits);
-      
-      if(newSL < currentSL - (atrVal * 0.2) || currentSL == 0) ModifySL(newSL, currentTP);
+      if(newSL < currentSL - minMove || currentSL == 0) ModifySL(newSL, currentTP);
    }
 }
 
@@ -640,10 +712,10 @@ void ExecuteTrade(ENUM_ORDER_TYPE type, double p, double a, double zScore) {
    double bid   = SymbolInfoDouble(TradeSymbol, SYMBOL_BID);
    double ask   = SymbolInfoDouble(TradeSymbol, SYMBOL_ASK);
    int stopLevel = (int)SymbolInfoInteger(TradeSymbol, SYMBOL_TRADE_STOPS_LEVEL);
-   
+
    double slD = InpSLPoints * point;
    double tpD = InpHardTPPoints * point;
-   
+
    // Apply SYMBOL_TRADE_STOPS_LEVEL safety
    if(slD < stopLevel * point) slD = stopLevel * point + 5 * point;
    if(tpD < stopLevel * point) tpD = stopLevel * point + 5 * point;
